@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 #Preview {
     ContentView()
 }
-
+//whatisgoingonherebwekfast
 #if canImport(AppKit)
 import AppKit
 class WindowSizeController {
