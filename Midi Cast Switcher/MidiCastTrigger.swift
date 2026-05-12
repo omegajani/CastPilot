@@ -237,7 +237,7 @@ struct MidiCastSwitcherApp: App {
 
         // Single config window — Window (not WindowGroup) ensures only one instance
         Window("MCS Einstellungen", id: "config") {
-            ConfigView(midi: midi)
+            ConfigView(midi: midi, emailClient: emailClient)
         }
         .windowResizability(.contentSize)
 
@@ -297,24 +297,6 @@ struct LiveView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Besetzung sofort aus Email importieren")
-                // Email settings
-                Button {
-                    emailClient.openInSettings = true
-                    openWindow(id: "email")
-                } label: {
-                    ZStack(alignment: .bottomTrailing) {
-                        Image(systemName: "envelope")
-                            .font(.system(size: 13))
-                            .foregroundColor(.secondary)
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 7))
-                            .foregroundColor(.secondary)
-                            .offset(x: 5, y: 4)
-                    }
-                    .frame(width: 20, height: 18)
-                }
-                .buttonStyle(.plain)
-                .help("Email-Einstellungen")
                 Button {
                     openWindow(id: "config")
                 } label: {
@@ -403,7 +385,9 @@ struct LiveView: View {
 
 struct ConfigView: View {
     @ObservedObject var midi: MidiController
+    @ObservedObject var emailClient: IMAPClient
     @State private var selectedRoleId: UUID? = nil
+    @State private var emailPassword = ""
 
     private let leftW: CGFloat  = 340
     private let totalH: CGFloat = 580
@@ -484,6 +468,54 @@ struct ConfigView: View {
                         }
                     }
                     .padding(14)
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            ZStack(alignment: .bottomTrailing) {
+                                Image(systemName: "envelope").font(.system(size: 12))
+                                Image(systemName: "gearshape.fill").font(.system(size: 6)).offset(x: 4, y: 3)
+                            }
+                            Text("Email Import").font(.headline)
+                        }
+
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Server").font(.caption).foregroundColor(.secondary)
+                                TextField("imap.gmx.de", text: $midi.config.emailConfig.imapServer)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Port").font(.caption).foregroundColor(.secondary)
+                                TextField("993", value: $midi.config.emailConfig.imapPort, formatter: NumberFormatter())
+                                    .textFieldStyle(.roundedBorder).frame(width: 60)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Benutzername").font(.caption).foregroundColor(.secondary)
+                            TextField("name@gmx.de", text: $midi.config.emailConfig.username)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Passwort").font(.caption).foregroundColor(.secondary)
+                            SecureField("Passwort", text: $emailPassword)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        HStack {
+                            Spacer()
+                            Button("Speichern") {
+                                keychainSave(account: midi.config.emailConfig.username, secret: emailPassword)
+                                midi.saveConfig()
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+                    .padding(14)
+                    .onAppear { emailPassword = keychainLoad(account: midi.config.emailConfig.username) ?? "" }
                 }
             }
             .frame(width: leftW, height: totalH)
@@ -1051,7 +1083,6 @@ class IMAPClient: ObservableObject {
 struct EmailView: View {
     @ObservedObject var midi: MidiController
     @ObservedObject var emailClient: IMAPClient
-    @State private var showSettings = false
     @State private var password = ""
 
     private var imap: IMAPClient { emailClient }
@@ -1068,10 +1099,6 @@ struct EmailView: View {
                 }
                 Spacer()
                 if imap.isFetching { ProgressView().scaleEffect(0.7) }
-                Button { showSettings.toggle() } label: {
-                    Image(systemName: showSettings ? "xmark.circle.fill" : "gear")
-                }
-                .buttonStyle(.bordered)
                 Button("E-Mail abrufen") {
                     let pw = password.isEmpty ? (keychainLoad(account: midi.config.emailConfig.username) ?? "") : password
                     Task {
@@ -1093,59 +1120,12 @@ struct EmailView: View {
 
             Divider()
 
-            if showSettings {
-                settingsPanel
-            } else {
-                mainPanel
-            }
+            mainPanel
         }
         .frame(width: 820, height: 560)
         .onAppear {
             password = keychainLoad(account: midi.config.emailConfig.username) ?? ""
-            if emailClient.openInSettings { showSettings = true }
         }
-    }
-
-    @ViewBuilder private var settingsPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("IMAP Verbindung").font(.headline)
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Server").font(.caption).foregroundColor(.secondary)
-                    TextField("imap.exchange.example.com", text: $midi.config.emailConfig.imapServer)
-                        .textFieldStyle(.roundedBorder)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Port").font(.caption).foregroundColor(.secondary)
-                    TextField("993", value: $midi.config.emailConfig.imapPort, formatter: NumberFormatter())
-                        .textFieldStyle(.roundedBorder).frame(width: 70)
-                }
-            }
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Benutzername / E-Mail-Adresse").font(.caption).foregroundColor(.secondary)
-                    TextField("name@example.com", text: $midi.config.emailConfig.username)
-                        .textFieldStyle(.roundedBorder)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Passwort").font(.caption).foregroundColor(.secondary)
-                    SecureField("Passwort", text: $password)
-                        .textFieldStyle(.roundedBorder).frame(width: 200)
-                }
-            }
-            HStack {
-                Text("Passwort wird sicher im macOS-Schlüsselbund gespeichert.")
-                    .font(.caption).foregroundColor(.secondary)
-                Spacer()
-                Button("Speichern") {
-                    keychainSave(account: midi.config.emailConfig.username, secret: password)
-                    midi.saveConfig()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(20)
-        Spacer()
     }
 
     @ViewBuilder private var mainPanel: some View {
@@ -1155,12 +1135,33 @@ struct EmailView: View {
                 Text("Original Email").font(.caption.bold()).foregroundColor(.secondary)
                     .padding(.horizontal, 12).padding(.vertical, 8)
                 Divider()
-                ScrollView {
-                    Text(imap.rawEmailText.isEmpty ? "Noch keine Email geladen." : imap.rawEmailText)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(imap.rawEmailText.isEmpty ? .secondary : .primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        if imap.rawEmailText.isEmpty {
+                            Text("Noch keine Email geladen.")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .padding(12)
+                        } else {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(Array(imap.rawEmailText.components(separatedBy: "\n").enumerated()), id: \.offset) { idx, line in
+                                    Text(line.isEmpty ? " " : line)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .id(idx)
+                                }
+                            }
+                            .padding(12)
+                        }
+                    }
+                    .onChange(of: imap.rawEmailText) { text in
+                        let lines = text.components(separatedBy: "\n")
+                        if let idx = lines.firstIndex(where: { $0.localizedCaseInsensitiveContains("last updated") }) {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                withAnimation { proxy.scrollTo(max(0, idx - 1), anchor: .top) }
+                            }
+                        }
+                    }
                 }
             }
             .frame(width: 380)
