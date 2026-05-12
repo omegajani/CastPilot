@@ -224,11 +224,12 @@ class MidiController: ObservableObject {
 @main
 struct MidiCastSwitcherApp: App {
     @StateObject private var midi = MidiController()
+    @StateObject private var emailClient = IMAPClient()
 
     var body: some Scene {
         // Compact live window — stays on top of Nuendo
         WindowGroup("MCS Live", id: "live") {
-            LiveView(midi: midi)
+            LiveView(midi: midi, emailClient: emailClient)
                 .onAppear { setupLiveWindow() }
         }
         .windowResizability(.contentSize)
@@ -242,7 +243,7 @@ struct MidiCastSwitcherApp: App {
 
         // Email import window
         Window("MCS Email Import", id: "email") {
-            EmailView(midi: midi)
+            EmailView(midi: midi, emailClient: emailClient)
         }
         .windowResizability(.contentSize)
     }
@@ -265,6 +266,7 @@ struct MidiCastSwitcherApp: App {
 
 struct LiveView: View {
     @ObservedObject var midi: MidiController
+    @ObservedObject var emailClient: IMAPClient
     @State private var fireScale: CGFloat = 1.0
     @Environment(\.openWindow) private var openWindow
 
@@ -276,15 +278,43 @@ struct LiveView: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(.secondary)
                 Spacer()
+                // Quick import: fetch + apply immediately, then open email window
                 Button {
-                    openWindow(id: "email")
+                    let pw = keychainLoad(account: midi.config.emailConfig.username) ?? ""
+                    let keywords = midi.config.roles.map { $0.emailKeyword }
+                    Task {
+                        await emailClient.fetch(config: midi.config.emailConfig, password: pw, keywords: keywords)
+                        emailClient.buildPending(roles: midi.config.roles)
+                        emailClient.applyAssignments(to: &midi.config)
+                        midi.saveConfig()
+                        emailClient.openInSettings = false
+                        openWindow(id: "email")
+                    }
                 } label: {
-                    Image(systemName: "envelope")
+                    Image(systemName: "envelope.open.fill")
                         .font(.system(size: 13))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(emailClient.isFetching ? .accentColor : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Cast Email importieren")
+                .help("Besetzung sofort aus Email importieren")
+                // Email settings
+                Button {
+                    emailClient.openInSettings = true
+                    openWindow(id: "email")
+                } label: {
+                    ZStack(alignment: .bottomTrailing) {
+                        Image(systemName: "envelope")
+                            .font(.system(size: 13))
+                            .foregroundColor(.secondary)
+                        Image(systemName: "gearshape.fill")
+                            .font(.system(size: 7))
+                            .foregroundColor(.secondary)
+                            .offset(x: 5, y: 4)
+                    }
+                    .frame(width: 20, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help("Email-Einstellungen")
                 Button {
                     openWindow(id: "config")
                 } label: {
@@ -760,6 +790,31 @@ class IMAPClient: ObservableObject {
     @Published var rawEmailText = ""
     @Published var parsedRows: [(keyword: String, name: String)] = []
     @Published var fetchError: String? = nil
+    @Published var openInSettings = false
+    @Published var pending: [UUID: UUID?] = [:]
+
+    func buildPending(roles: [Role]) {
+        pending = [:]
+        for role in roles {
+            guard let row = parsedRows.first(where: {
+                $0.keyword.uppercased() == role.emailKeyword.uppercased()
+            }) else { continue }
+            let first = row.name.components(separatedBy: " ").first?.lowercased() ?? ""
+            let match = role.members.first {
+                ($0.name.components(separatedBy: " ").first?.lowercased() ?? "") == first
+                    || $0.name.lowercased().contains(first)
+            }
+            pending[role.id] = match?.id
+        }
+    }
+
+    func applyAssignments(to config: inout AppConfig) {
+        for (roleId, memberId) in pending {
+            if let idx = config.roles.firstIndex(where: { $0.id == roleId }) {
+                config.roles[idx].selectedMemberId = memberId
+            }
+        }
+    }
 
     func fetch(config: EmailConfig, password: String, keywords: [String]) async {
         guard !config.imapServer.isEmpty, !config.username.isEmpty, !password.isEmpty else {
@@ -995,10 +1050,11 @@ class IMAPClient: ObservableObject {
 
 struct EmailView: View {
     @ObservedObject var midi: MidiController
-    @StateObject private var imap = IMAPClient()
-    @State private var pending: [UUID: UUID?] = [:]
+    @ObservedObject var emailClient: IMAPClient
     @State private var showSettings = false
     @State private var password = ""
+
+    private var imap: IMAPClient { emailClient }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1021,7 +1077,7 @@ struct EmailView: View {
                     Task {
                         await imap.fetch(config: midi.config.emailConfig, password: pw,
                                          keywords: midi.config.roles.map { $0.emailKeyword })
-                        buildPending()
+                        emailClient.buildPending(roles: midi.config.roles)
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -1044,7 +1100,10 @@ struct EmailView: View {
             }
         }
         .frame(width: 820, height: 560)
-        .onAppear { password = keychainLoad(account: midi.config.emailConfig.username) ?? "" }
+        .onAppear {
+            password = keychainLoad(account: midi.config.emailConfig.username) ?? ""
+            if emailClient.openInSettings { showSettings = true }
+        }
     }
 
     @ViewBuilder private var settingsPanel: some View {
@@ -1131,16 +1190,19 @@ struct EmailView: View {
                             if let row = imap.parsedRows.first(where: {
                                 $0.keyword.uppercased() == role.emailKeyword.uppercased()
                             }) {
+                                let unmatched = emailClient.pending[role.id] == nil || emailClient.pending[role.id]! == nil
                                 HStack(spacing: 10) {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(role.name).font(.system(size: 13, weight: .semibold))
+                                        Text(role.name)
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundColor(unmatched ? .red : .primary)
                                         Text("erkannt: \"\(row.name)\"")
                                             .font(.caption).foregroundColor(.secondary)
                                     }
                                     Spacer()
                                     Picker("", selection: Binding(
-                                        get: { pending[role.id] ?? nil },
-                                        set: { pending[role.id] = $0 }
+                                        get: { emailClient.pending[role.id] ?? nil },
+                                        set: { emailClient.pending[role.id] = $0 }
                                     )) {
                                         Text("—").tag(UUID?.none)
                                         ForEach(role.members) { m in Text(m.name).tag(UUID?.some(m.id)) }
@@ -1157,7 +1219,7 @@ struct EmailView: View {
                         Spacer()
                         Button("Besetzung übernehmen") { applyAssignments() }
                             .buttonStyle(.borderedProminent)
-                            .disabled(pending.values.allSatisfy { $0 == nil })
+                            .disabled(emailClient.pending.values.allSatisfy { $0 == nil })
                     }
                     .padding(12)
                 }
@@ -1166,27 +1228,8 @@ struct EmailView: View {
         .frame(maxHeight: .infinity)
     }
 
-    private func buildPending() {
-        pending = [:]
-        for role in midi.config.roles {
-            guard let row = imap.parsedRows.first(where: {
-                $0.keyword.uppercased() == role.emailKeyword.uppercased()
-            }) else { continue }
-            let first = row.name.components(separatedBy: " ").first?.lowercased() ?? ""
-            let match = role.members.first {
-                ($0.name.components(separatedBy: " ").first?.lowercased() ?? "") == first
-                || $0.name.lowercased().contains(first)
-            }
-            pending[role.id] = match?.id
-        }
-    }
-
     private func applyAssignments() {
-        for (roleId, memberId) in pending {
-            if let idx = midi.config.roles.firstIndex(where: { $0.id == roleId }) {
-                midi.config.roles[idx].selectedMemberId = memberId
-            }
-        }
+        emailClient.applyAssignments(to: &midi.config)
         midi.saveConfig()
     }
 }
