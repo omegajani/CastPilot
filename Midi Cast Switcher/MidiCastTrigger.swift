@@ -28,36 +28,81 @@ struct NuendoTrack: Codable, Identifiable, Equatable {
     var name: String = "Neuer Kanal"
     var selectCommand: MidiCommand = MidiCommand()
     var versionCount: Int = 2
-    // Per-track slot override: memberId.uuidString → 1-based version slot in this track.
-    // If absent, member.versionPosition is used as fallback.
+    /// Slot-centric assignment: index `i` holds the memberId (uuidString) at slot `i+1`, or nil if empty.
+    /// `slotAssignments.count` is kept equal to `versionCount`.
+    var slotAssignments: [String?] = [nil, nil]
+    /// Legacy: pre-1.3 stored per-track overrides keyed by memberId. Kept for one-time migration on load.
     var slotOverrides: [String: Int] = [:]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, selectCommand, versionCount, slotOverrides
+        case id, name, selectCommand, versionCount, slotAssignments, slotOverrides
     }
 
     init(id: UUID = UUID(), name: String = "Neuer Kanal",
          selectCommand: MidiCommand = MidiCommand(),
-         versionCount: Int = 2, slotOverrides: [String: Int] = [:]) {
+         versionCount: Int = 2,
+         slotAssignments: [String?]? = nil,
+         slotOverrides: [String: Int] = [:]) {
         self.id = id; self.name = name
         self.selectCommand = selectCommand
         self.versionCount = versionCount
+        self.slotAssignments = slotAssignments ?? Array(repeating: nil, count: versionCount)
         self.slotOverrides = slotOverrides
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id             = (try? c.decodeIfPresent(UUID.self,         forKey: .id))            ?? UUID()
-        name           = (try? c.decodeIfPresent(String.self,       forKey: .name))          ?? "Neuer Kanal"
-        selectCommand  = (try? c.decodeIfPresent(MidiCommand.self,  forKey: .selectCommand)) ?? MidiCommand()
-        versionCount   = (try? c.decodeIfPresent(Int.self,          forKey: .versionCount))  ?? 2
-        slotOverrides  = (try? c.decodeIfPresent([String: Int].self, forKey: .slotOverrides)) ?? [:]
+        id             = (try? c.decodeIfPresent(UUID.self,           forKey: .id))            ?? UUID()
+        name           = (try? c.decodeIfPresent(String.self,         forKey: .name))          ?? "Neuer Kanal"
+        selectCommand  = (try? c.decodeIfPresent(MidiCommand.self,    forKey: .selectCommand)) ?? MidiCommand()
+        versionCount   = (try? c.decodeIfPresent(Int.self,            forKey: .versionCount))  ?? 2
+        slotOverrides  = (try? c.decodeIfPresent([String: Int].self,  forKey: .slotOverrides)) ?? [:]
+        if let decoded = try? c.decodeIfPresent([String?].self, forKey: .slotAssignments) {
+            slotAssignments = decoded
+        } else {
+            // Initialize empty; migration from legacy versionPosition + slotOverrides happens in
+            // MidiController.loadConfig() once members are available.
+            slotAssignments = Array(repeating: nil, count: versionCount)
+        }
+        // Normalize length
+        if slotAssignments.count < versionCount {
+            slotAssignments.append(contentsOf: Array(repeating: nil, count: versionCount - slotAssignments.count))
+        } else if slotAssignments.count > versionCount {
+            slotAssignments = Array(slotAssignments.prefix(versionCount))
+        }
     }
 
-    /// Resolves the target slot for a given member in this track.
-    /// Returns the override if set, else falls back to the member's global versionPosition.
-    func targetSlot(for member: CastMember) -> Int {
-        return slotOverrides[member.id.uuidString] ?? member.versionPosition
+    /// Returns the 1-based slot of a member in this track, or nil if the member isn't assigned here.
+    func slot(of memberId: UUID) -> Int? {
+        if let idx = slotAssignments.firstIndex(of: memberId.uuidString) {
+            return idx + 1
+        }
+        return nil
+    }
+
+    /// Sets a member to a specific slot. Removes the member from any other slot in this track first
+    /// (one member can only occupy one slot per track).
+    mutating func setMember(_ memberId: UUID?, atSlot slot: Int) {
+        guard slot >= 1 && slot <= versionCount else { return }
+        let idx = slot - 1
+        // If we're assigning a real member, clear them from any other slot first.
+        if let mid = memberId?.uuidString {
+            for i in slotAssignments.indices where slotAssignments[i] == mid && i != idx {
+                slotAssignments[i] = nil
+            }
+            slotAssignments[idx] = mid
+        } else {
+            slotAssignments[idx] = nil
+        }
+    }
+
+    /// Adjusts slotAssignments length to match versionCount (preserves existing entries).
+    mutating func syncSlotAssignmentsToVersionCount() {
+        if slotAssignments.count < versionCount {
+            slotAssignments.append(contentsOf: Array(repeating: nil, count: versionCount - slotAssignments.count))
+        } else if slotAssignments.count > versionCount {
+            slotAssignments = Array(slotAssignments.prefix(versionCount))
+        }
     }
 }
 
@@ -202,6 +247,7 @@ class MidiController: ObservableObject {
         if let data = try? Data(contentsOf: configURL),
            let loaded = try? JSONDecoder().decode(AppConfig.self, from: data) {
             self.config = loaded
+            migrateLegacySlots()
         } else {
             let defaultRoles = [
                 ("Aurora",  ["Aurora HS",  "Aurora TS"]),
@@ -223,6 +269,31 @@ class MidiController: ObservableObject {
         }
     }
 
+    /// One-time migration: if a track has no slotAssignments populated but the legacy
+    /// slotOverrides + member.versionPosition data is present, build slotAssignments from it.
+    private func migrateLegacySlots() {
+        for r in config.roles.indices {
+            let members = config.roles[r].members
+            for t in config.roles[r].tracks.indices {
+                var track = config.roles[r].tracks[t]
+                track.syncSlotAssignmentsToVersionCount()
+                let hasAnyAssignment = track.slotAssignments.contains(where: { $0 != nil })
+                if !hasAnyAssignment && !members.isEmpty {
+                    // Derive slot for each member: override if present, else versionPosition
+                    for member in members {
+                        let slot = track.slotOverrides[member.id.uuidString] ?? member.versionPosition
+                        if slot >= 1 && slot <= track.versionCount {
+                            track.slotAssignments[slot - 1] = member.id.uuidString
+                        }
+                    }
+                }
+                // Legacy data no longer needed after migration
+                track.slotOverrides = [:]
+                config.roles[r].tracks[t] = track
+            }
+        }
+    }
+
     // Builds and fires the complete MIDI sequence for all selected cast members.
     // For each role's selected member, and for each track in that role:
     //   1. Send selectCommand to choose the track in Nuendo
@@ -236,12 +307,13 @@ class MidiController: ObservableObject {
                   let member = role.members.first(where: { $0.id == selId }) else { continue }
 
             for track in role.tracks {
+                // Skip the track entirely if this member isn't assigned to any slot in it.
+                guard let targetSlot = track.slot(of: member.id) else { continue }
                 sequence.append(track.selectCommand)
                 let resetSteps = max(0, track.versionCount - 1)
                 for _ in 0..<resetSteps {
                     sequence.append(config.prevVersionCommand)
                 }
-                let targetSlot = track.targetSlot(for: member)
                 let forwardSteps = max(0, targetSlot - 1)
                 for _ in 0..<forwardSteps {
                     sequence.append(config.nextVersionCommand)
@@ -665,46 +737,32 @@ struct RoleDetailView: View {
         role.members[idx].versionPosition = newPos
     }
 
-    /// Applies a new slot value to the track override (or removes it if equal to the member's default).
-    private func applySlot(_ newValue: Int, key: String, member: CastMember,
-                           track: Binding<NuendoTrack>, max maxSlot: Int) {
-        let clamped = min(Swift.max(1, newValue), maxSlot)
-        if clamped == member.versionPosition {
-            track.wrappedValue.slotOverrides.removeValue(forKey: key)
-        } else {
-            track.wrappedValue.slotOverrides[key] = clamped
-        }
-    }
-
-    /// One row in the per-track slot table: member name + slot stepper.
-    /// Stepper writes the override; if the value equals the member's default versionPosition,
-    /// the override is removed (keeps the JSON clean and the "default" indicator visible).
+    /// One row per slot in a track: shows "Slot N: [member dropdown]".
+    /// Dropdown options are "—" (empty) plus all members of the role.
+    /// Picking a member moves them to this slot and clears them from any other slot in this track.
     @ViewBuilder
-    private func slotRow(track: Binding<NuendoTrack>, member: CastMember) -> some View {
-        let key = member.id.uuidString
-        let isOverridden = track.wrappedValue.slotOverrides[key] != nil
-        let currentSlot = track.wrappedValue.slotOverrides[key] ?? member.versionPosition
-        let maxSlot = max(1, track.wrappedValue.versionCount)
+    private func slotAssignmentRow(track: Binding<NuendoTrack>, slot: Int) -> some View {
+        let idx = slot - 1
+        let currentId: String? = (idx < track.wrappedValue.slotAssignments.count) ? track.wrappedValue.slotAssignments[idx] : nil
         HStack(spacing: 6) {
-            Text(member.name)
-                .font(.system(size: 11))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if isOverridden {
-                Text("override")
-                    .font(.system(size: 9))
-                    .foregroundColor(.accentColor)
-            }
-            Text("\(currentSlot)")
+            Text("Slot \(slot)")
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .frame(width: 18, alignment: .trailing)
-                .foregroundColor(isOverridden ? .accentColor : .primary)
-            // Inverted arrows: ↑ decreases (move up in list), ↓ increases (move down)
-            Stepper("",
-                onIncrement: { applySlot(currentSlot - 1, key: key, member: member, track: track, max: maxSlot) },
-                onDecrement: { applySlot(currentSlot + 1, key: key, member: member, track: track, max: maxSlot) }
-            )
+                .foregroundColor(.secondary)
+                .frame(width: 42, alignment: .leading)
+            Picker("", selection: Binding<String>(
+                get: { currentId ?? "" },
+                set: { newValue in
+                    let memberUUID: UUID? = newValue.isEmpty ? nil : UUID(uuidString: newValue)
+                    track.wrappedValue.setMember(memberUUID, atSlot: slot)
+                }
+            )) {
+                Text("—").tag("")
+                ForEach(role.members.sorted { $0.versionPosition < $1.versionPosition }) { member in
+                    Text(member.name).tag(member.id.uuidString)
+                }
+            }
             .labelsHidden()
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -729,21 +787,26 @@ struct RoleDetailView: View {
                                 Text("\(track.versionCount)")
                                     .frame(width: 22, alignment: .trailing)
                                     .font(.caption)
-                                Stepper("", value: $track.versionCount, in: 1...32)
-                                    .labelsHidden()
+                                Stepper("", value: Binding(
+                                    get: { track.versionCount },
+                                    set: { newValue in
+                                        let clamped = min(max(1, newValue), 32)
+                                        $track.wrappedValue.versionCount = clamped
+                                        $track.wrappedValue.syncSlotAssignmentsToVersionCount()
+                                    }
+                                ), in: 1...32)
+                                .labelsHidden()
                             }
 
                             Text("Auswahl-Befehl:")
                                 .font(.caption).foregroundColor(.secondary)
                             MidiCommandRow(cmd: $track.selectCommand)
 
-                            if !role.members.isEmpty {
-                                Divider().padding(.vertical, 2)
-                                Text("Slots in diesem Kanal:")
-                                    .font(.caption).foregroundColor(.secondary)
-                                ForEach(role.members.sorted { $0.versionPosition < $1.versionPosition }) { member in
-                                    slotRow(track: $track, member: member)
-                                }
+                            Divider().padding(.vertical, 2)
+                            Text("Slots in diesem Kanal:")
+                                .font(.caption).foregroundColor(.secondary)
+                            ForEach(1...max(1, track.versionCount), id: \.self) { slot in
+                                slotAssignmentRow(track: $track, slot: slot)
                             }
                         }
                         .padding(.vertical, 6)
@@ -857,14 +920,16 @@ struct MidiSequencePreview: View {
     private func lines() -> [String] {
         var out: [String] = []
         for track in role.tracks {
+            guard let targetSlot = track.slot(of: member.id) else {
+                out.append("[\(track.name)] — nicht zugewiesen, übersprungen")
+                continue
+            }
             out.append("[\(track.name)] → \(cmdStr(track.selectCommand))")
             let r = max(0, track.versionCount - 1)
             if r > 0 { out.append("  ↑ Prev ×\(r)  (auf Anfang)") }
-            let targetSlot = track.targetSlot(for: member)
-            let overrideHint = track.slotOverrides[member.id.uuidString] != nil ? " (override)" : ""
             let f = max(0, targetSlot - 1)
-            if f > 0 { out.append("  ↓ Next ×\(f)  → Pos \(targetSlot)\(overrideHint)") }
-            else      { out.append("  → Pos 1 (erste Version)\(overrideHint)") }
+            if f > 0 { out.append("  ↓ Next ×\(f)  → Slot \(targetSlot)") }
+            else      { out.append("  → Slot 1 (erste Version)") }
         }
         return out
     }
