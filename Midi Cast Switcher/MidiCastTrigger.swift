@@ -78,20 +78,22 @@ struct AppConfig: Codable, Equatable {
     var nextVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127)
     var roles: [Role] = []
     var emailConfig: EmailConfig = EmailConfig()
+    var midiOutputName: String = ""   // empty = virtual source
 
     enum CodingKeys: String, CodingKey {
-        case delayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig
+        case delayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName
     }
 
     init(delayMs: Int = 50,
          prevVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127),
          nextVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127),
-         roles: [Role] = [], emailConfig: EmailConfig = EmailConfig()) {
+         roles: [Role] = [], emailConfig: EmailConfig = EmailConfig(), midiOutputName: String = "") {
         self.delayMs = delayMs
         self.prevVersionCommand = prevVersionCommand
         self.nextVersionCommand = nextVersionCommand
         self.roles = roles
         self.emailConfig = emailConfig
+        self.midiOutputName = midiOutputName
     }
 
     init(from decoder: Decoder) throws {
@@ -101,16 +103,24 @@ struct AppConfig: Codable, Equatable {
         nextVersionCommand = (try? c.decodeIfPresent(MidiCommand.self,  forKey: .nextVersionCommand)) ?? MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127)
         roles              = (try? c.decodeIfPresent([Role].self,        forKey: .roles))              ?? []
         emailConfig        = (try? c.decodeIfPresent(EmailConfig.self,  forKey: .emailConfig))        ?? EmailConfig()
+        midiOutputName     = (try? c.decodeIfPresent(String.self,       forKey: .midiOutputName))     ?? ""
     }
 }
 
 // MARK: - MIDI Controller
 
+struct MIDIDestinationInfo: Identifiable, Equatable {
+    let id: MIDIEndpointRef
+    let name: String
+}
+
 class MidiController: ObservableObject {
     var midiClient: MIDIClientRef = 0
     var virtualSource: MIDIEndpointRef = 0
+    var outputPort: MIDIPortRef = 0
 
     @Published var config: AppConfig = AppConfig()
+    @Published var availableDestinations: [MIDIDestinationInfo] = []
     let configURL: URL
 
     init() {
@@ -123,14 +133,32 @@ class MidiController: ObservableObject {
         configURL = appDir.appendingPathComponent("config.json")
         loadConfig()
         setupMIDI()
+        refreshDestinations()
     }
 
     func setupMIDI() {
         let status = MIDIClientCreate("MidiCastSwitcherClient" as CFString, nil, nil, &midiClient)
         if status == noErr {
-            let src = MIDISourceCreate(midiClient, "MidiCastSwitcher Source" as CFString, &virtualSource)
-            if src != noErr { print("MIDI Source Fehler: \(src)") }
+            MIDISourceCreate(midiClient, "MidiCastSwitcher Source" as CFString, &virtualSource)
+            MIDIOutputPortCreate(midiClient, "MidiCastSwitcher Out" as CFString, &outputPort)
         }
+    }
+
+    func refreshDestinations() {
+        let count = MIDIGetNumberOfDestinations()
+        availableDestinations = (0..<count).compactMap { i in
+            let dest = MIDIGetDestination(i)
+            var nameRef: Unmanaged<CFString>?
+            guard MIDIObjectGetStringProperty(dest, kMIDIPropertyName, &nameRef) == noErr,
+                  let name = nameRef?.takeRetainedValue() as String? else { return nil }
+            return MIDIDestinationInfo(id: dest, name: name)
+        }
+    }
+
+    // Resolve stored output name to a live MIDIEndpointRef
+    private var selectedDestination: MIDIEndpointRef? {
+        guard !config.midiOutputName.isEmpty else { return nil }
+        return availableDestinations.first(where: { $0.name == config.midiOutputName })?.id
     }
 
     func loadConfig() {
@@ -205,7 +233,12 @@ class MidiController: ObservableObject {
         var packetList = MIDIPacketList()
         var packet = MIDIPacketListInit(&packetList)
         packet = MIDIPacketListAdd(&packetList, 1024, packet, 0, bytes.count, bytes)
-        MIDIReceived(virtualSource, &packetList)
+
+        if let dest = selectedDestination {
+            MIDISend(outputPort, dest, &packetList)
+        } else {
+            MIDIReceived(virtualSource, &packetList)
+        }
 
         if command.type == .note {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -213,7 +246,11 @@ class MidiController: ObservableObject {
                 var offPkt = MIDIPacketListInit(&offList)
                 let off: [UInt8] = [0x80 + UInt8(command.channel - 1), b2, 0]
                 offPkt = MIDIPacketListAdd(&offList, 1024, offPkt, 0, off.count, off)
-                MIDIReceived(self.virtualSource, &offList)
+                if let dest = self.selectedDestination {
+                    MIDISend(self.outputPort, dest, &offList)
+                } else {
+                    MIDIReceived(self.virtualSource, &offList)
+                }
             }
         }
     }
@@ -326,7 +363,7 @@ struct LiveView: View {
 
                             Picker("", selection: $role.selectedMemberId) {
                                 Text("—").tag(UUID?.none)
-                                ForEach(role.members) { member in
+                                ForEach(role.members.sorted { $0.versionPosition < $1.versionPosition }) { member in
                                     Text(member.name).tag(UUID?.some(member.id))
                                 }
                             }
@@ -445,6 +482,25 @@ struct ConfigView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Nuendo Navigation")
                             .font(.headline)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text("MIDI Ausgang:")
+                                    .font(.caption).foregroundColor(.secondary)
+                                Spacer()
+                                Button { midi.refreshDestinations() } label: {
+                                    Image(systemName: "arrow.clockwise").font(.caption)
+                                }
+                                .buttonStyle(.plain).foregroundColor(.secondary)
+                            }
+                            Picker("", selection: $midi.config.midiOutputName) {
+                                Text("Virtual Source (MidiCastSwitcher)").tag("")
+                                ForEach(midi.availableDestinations) { dest in
+                                    Text(dest.name).tag(dest.name)
+                                }
+                            }
+                            .labelsHidden()
+                        }
 
                         HStack {
                             Text("Verzögerung:")
@@ -623,15 +679,13 @@ struct RoleDetailView: View {
                     .padding(.bottom, 6)
 
                 List(selection: $selectedMemberId) {
-                    ForEach(role.members) { member in
+                    let sortedIndices = role.members.indices.sorted { role.members[$0].versionPosition < role.members[$1].versionPosition }
+                    ForEach(sortedIndices, id: \.self) { idx in
+                        let member = role.members[idx]
                         HStack(spacing: 8) {
                             TextField("Name", text: Binding(
-                                get: { member.name },
-                                set: { newName in
-                                    if let i = role.members.firstIndex(where: { $0.id == member.id }) {
-                                        role.members[i].name = newName
-                                    }
-                                }
+                                get: { role.members[idx].name },
+                                set: { role.members[idx].name = $0 }
                             ))
                             Spacer()
                             Text("Slot")
@@ -647,7 +701,11 @@ struct RoleDetailView: View {
                         }
                         .tag(member.id)
                     }
-                    .onDelete { role.members.remove(atOffsets: $0) }
+                    .onDelete { offsets in
+                        let sorted = role.members.indices.sorted { role.members[$0].versionPosition < role.members[$1].versionPosition }
+                        let toRemove = offsets.map { sorted[$0] }
+                        role.members.remove(atOffsets: IndexSet(toRemove))
+                    }
                 }
 
                 HStack {
@@ -1068,7 +1126,7 @@ class IMAPClient: ObservableObject {
                     candidate = rest
                 }
 
-                if !candidate.isEmpty, !candidate.lowercased().contains("cut today") {
+                if !candidate.isEmpty {
                     results.append((keyword: keyword, name: candidate))
                 }
                 break
