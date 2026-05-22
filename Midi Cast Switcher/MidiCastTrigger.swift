@@ -137,7 +137,13 @@ class MidiController: ObservableObject {
     }
 
     func setupMIDI() {
-        let status = MIDIClientCreate("MidiCastSwitcherClient" as CFString, nil, nil, &midiClient)
+        let block: MIDINotifyBlock = { [weak self] notification in
+            let id = notification.pointee.messageID
+            if id == .msgSetupChanged || id == .msgObjectAdded || id == .msgObjectRemoved {
+                DispatchQueue.main.async { self?.refreshDestinations() }
+            }
+        }
+        let status = MIDIClientCreateWithBlock("MidiCastSwitcherClient" as CFString, &midiClient, block)
         if status == noErr {
             MIDISourceCreate(midiClient, "MidiCastSwitcher Source" as CFString, &virtualSource)
             MIDIOutputPortCreate(midiClient, "MidiCastSwitcher Out" as CFString, &outputPort)
