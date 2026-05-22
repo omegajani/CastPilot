@@ -462,7 +462,8 @@ struct MidiCastSwitcherApp: App {
         Window("MCS Einstellungen", id: "config") {
             ConfigView(midi: midi, emailClient: emailClient, updater: updater)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 960, height: 580)
 
         // Email import window
         Window("MCS Email Import", id: "email") {
@@ -615,7 +616,7 @@ struct ConfigView: View {
     @State private var copyConfirmed = false
 
     private let leftW: CGFloat  = 340
-    private let totalH: CGFloat = 580
+    private let minH:  CGFloat = 580
 
     var body: some View {
         HStack(spacing: 0) {
@@ -827,14 +828,15 @@ struct ConfigView: View {
                     .padding(14)
                 }
             }
-            .frame(width: leftW, height: totalH)
+            .frame(width: leftW)
+            .frame(maxHeight: .infinity)
 
             Divider()
 
             // Right panel: role detail
             Group {
                 if let idx = midi.config.roles.firstIndex(where: { $0.id == selectedRoleId }) {
-                    RoleDetailView(role: $midi.config.roles[idx], height: totalH)
+                    RoleDetailView(role: $midi.config.roles[idx])
                 } else {
                     VStack(spacing: 10) {
                         Image(systemName: "arrow.left")
@@ -846,8 +848,9 @@ struct ConfigView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(minWidth: 960, minHeight: minH, maxHeight: .infinity)
         .onChange(of: midi.config) { midi.saveConfig() }
     }
 }
@@ -856,11 +859,10 @@ struct ConfigView: View {
 
 struct RoleDetailView: View {
     @Binding var role: Role
-    let height: CGFloat
     @State private var selectedMemberId: UUID? = nil
 
     private let trackW: CGFloat  = 360
-    private let memberW: CGFloat = 260
+    private let memberMinW: CGFloat = 260
 
     private func nextFreePosition() -> Int {
         let used = Set(role.members.map { $0.versionPosition })
@@ -976,11 +978,12 @@ struct RoleDetailView: View {
                 }
                 .padding(10)
             }
-            .frame(width: trackW, height: height)
+            .frame(width: trackW)
+            .frame(maxHeight: .infinity)
 
             Divider()
 
-            // Members column
+            // Members column (fills remaining width)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Darsteller")
                     .font(.headline)
@@ -1039,7 +1042,7 @@ struct RoleDetailView: View {
                     MidiSequencePreview(role: role, member: member)
                 }
             }
-            .frame(width: memberW, height: height)
+            .frame(minWidth: memberMinW, maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }
