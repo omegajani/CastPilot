@@ -781,21 +781,34 @@ struct RoleDetailView: View {
                             TextField("Kanal Name", text: $track.name)
                                 .font(.system(size: 13, weight: .semibold))
 
-                            HStack(spacing: 8) {
+                            HStack(spacing: 6) {
                                 Text("Versionen:")
                                     .font(.caption).foregroundColor(.secondary)
-                                Text("\(track.versionCount)")
-                                    .frame(width: 22, alignment: .trailing)
-                                    .font(.caption)
-                                Stepper("", value: Binding(
-                                    get: { track.versionCount },
-                                    set: { newValue in
-                                        let clamped = min(max(1, newValue), 32)
-                                        $track.wrappedValue.versionCount = clamped
+                                Button {
+                                    if $track.wrappedValue.versionCount > 1 {
+                                        $track.wrappedValue.versionCount -= 1
                                         $track.wrappedValue.syncSlotAssignmentsToVersionCount()
                                     }
-                                ), in: 1...32)
-                                .labelsHidden()
+                                } label: {
+                                    Image(systemName: "minus.circle")
+                                        .font(.system(size: 14))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(track.versionCount <= 1)
+                                Text("\(track.versionCount)")
+                                    .frame(width: 22, alignment: .center)
+                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                Button {
+                                    if $track.wrappedValue.versionCount < 32 {
+                                        $track.wrappedValue.versionCount += 1
+                                        $track.wrappedValue.syncSlotAssignmentsToVersionCount()
+                                    }
+                                } label: {
+                                    Image(systemName: "plus.circle")
+                                        .font(.system(size: 14))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(track.versionCount >= 32)
                             }
 
                             Text("Auswahl-Befehl:")
