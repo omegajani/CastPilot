@@ -28,6 +28,37 @@ struct NuendoTrack: Codable, Identifiable, Equatable {
     var name: String = "Neuer Kanal"
     var selectCommand: MidiCommand = MidiCommand()
     var versionCount: Int = 2
+    // Per-track slot override: memberId.uuidString → 1-based version slot in this track.
+    // If absent, member.versionPosition is used as fallback.
+    var slotOverrides: [String: Int] = [:]
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, selectCommand, versionCount, slotOverrides
+    }
+
+    init(id: UUID = UUID(), name: String = "Neuer Kanal",
+         selectCommand: MidiCommand = MidiCommand(),
+         versionCount: Int = 2, slotOverrides: [String: Int] = [:]) {
+        self.id = id; self.name = name
+        self.selectCommand = selectCommand
+        self.versionCount = versionCount
+        self.slotOverrides = slotOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id             = (try? c.decodeIfPresent(UUID.self,         forKey: .id))            ?? UUID()
+        name           = (try? c.decodeIfPresent(String.self,       forKey: .name))          ?? "Neuer Kanal"
+        selectCommand  = (try? c.decodeIfPresent(MidiCommand.self,  forKey: .selectCommand)) ?? MidiCommand()
+        versionCount   = (try? c.decodeIfPresent(Int.self,          forKey: .versionCount))  ?? 2
+        slotOverrides  = (try? c.decodeIfPresent([String: Int].self, forKey: .slotOverrides)) ?? [:]
+    }
+
+    /// Resolves the target slot for a given member in this track.
+    /// Returns the override if set, else falls back to the member's global versionPosition.
+    func targetSlot(for member: CastMember) -> Int {
+        return slotOverrides[member.id.uuidString] ?? member.versionPosition
+    }
 }
 
 // A cast member: just a name and their position (1-based) in Nuendo's Track Versions list
@@ -210,7 +241,8 @@ class MidiController: ObservableObject {
                 for _ in 0..<resetSteps {
                     sequence.append(config.prevVersionCommand)
                 }
-                let forwardSteps = max(0, member.versionPosition - 1)
+                let targetSlot = track.targetSlot(for: member)
+                let forwardSteps = max(0, targetSlot - 1)
                 for _ in 0..<forwardSteps {
                     sequence.append(config.nextVersionCommand)
                 }
@@ -633,6 +665,44 @@ struct RoleDetailView: View {
         role.members[idx].versionPosition = newPos
     }
 
+    /// One row in the per-track slot table: member name + slot stepper.
+    /// Stepper writes the override; if the value equals the member's default versionPosition,
+    /// the override is removed (keeps the JSON clean and the "default" indicator visible).
+    @ViewBuilder
+    private func slotRow(track: Binding<NuendoTrack>, member: CastMember) -> some View {
+        let key = member.id.uuidString
+        let isOverridden = track.wrappedValue.slotOverrides[key] != nil
+        let currentSlot = track.wrappedValue.slotOverrides[key] ?? member.versionPosition
+        let maxSlot = max(1, track.wrappedValue.versionCount)
+        HStack(spacing: 6) {
+            Text(member.name)
+                .font(.system(size: 11))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if isOverridden {
+                Text("override")
+                    .font(.system(size: 9))
+                    .foregroundColor(.accentColor)
+            }
+            Text("\(currentSlot)")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .frame(width: 18, alignment: .trailing)
+                .foregroundColor(isOverridden ? .accentColor : .primary)
+            Stepper("", value: Binding(
+                get: { currentSlot },
+                set: { newValue in
+                    let clamped = min(max(1, newValue), maxSlot)
+                    if clamped == member.versionPosition {
+                        track.wrappedValue.slotOverrides.removeValue(forKey: key)
+                    } else {
+                        track.wrappedValue.slotOverrides[key] = clamped
+                    }
+                }
+            ), in: 1...maxSlot)
+            .labelsHidden()
+        }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             // Tracks column
@@ -661,6 +731,15 @@ struct RoleDetailView: View {
                             Text("Auswahl-Befehl:")
                                 .font(.caption).foregroundColor(.secondary)
                             MidiCommandRow(cmd: $track.selectCommand)
+
+                            if !role.members.isEmpty {
+                                Divider().padding(.vertical, 2)
+                                Text("Slots in diesem Kanal:")
+                                    .font(.caption).foregroundColor(.secondary)
+                                ForEach(role.members.sorted { $0.versionPosition < $1.versionPosition }) { member in
+                                    slotRow(track: $track, member: member)
+                                }
+                            }
                         }
                         .padding(.vertical, 6)
                     }
@@ -775,9 +854,11 @@ struct MidiSequencePreview: View {
             out.append("[\(track.name)] → \(cmdStr(track.selectCommand))")
             let r = max(0, track.versionCount - 1)
             if r > 0 { out.append("  ↑ Prev ×\(r)  (auf Anfang)") }
-            let f = max(0, member.versionPosition - 1)
-            if f > 0 { out.append("  ↓ Next ×\(f)  → Pos \(member.versionPosition)") }
-            else      { out.append("  → Pos 1 (erste Version)") }
+            let targetSlot = track.targetSlot(for: member)
+            let overrideHint = track.slotOverrides[member.id.uuidString] != nil ? " (override)" : ""
+            let f = max(0, targetSlot - 1)
+            if f > 0 { out.append("  ↓ Next ×\(f)  → Pos \(targetSlot)\(overrideHint)") }
+            else      { out.append("  → Pos 1 (erste Version)\(overrideHint)") }
         }
         return out
     }
