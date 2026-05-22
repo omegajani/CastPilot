@@ -404,8 +404,10 @@ class UpdateChecker: ObservableObject {
     /// One-line shell command that downloads the latest release and replaces the installed
     /// app — without touching the user's config.json. Same as the README "Update" snippet.
     static var updateCommand: String {
+        // Note: inside single quotes the shell takes characters literally, so we want '"' (just a
+        // quote), not '\"' (backslash + quote — that's what tripped cut(1) before).
         """
-        curl -sL "$(curl -sL https://api.github.com/repos/\(UpdateChecker.repoSlug)/releases/latest | grep browser_download_url | cut -d '\\"' -f 4)" -o /tmp/MCS.zip && unzip -qo /tmp/MCS.zip -d /tmp/MCS && rm -rf "/Applications/Midi Cast Switcher.app" && mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && xattr -cr "/Applications/Midi Cast Switcher.app" && rm -rf /tmp/MCS /tmp/MCS.zip && open "/Applications/Midi Cast Switcher.app"
+        curl -sL "$(curl -sL https://api.github.com/repos/\(UpdateChecker.repoSlug)/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && unzip -qo /tmp/MCS.zip -d /tmp/MCS && rm -rf "/Applications/Midi Cast Switcher.app" && mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && xattr -cr "/Applications/Midi Cast Switcher.app" && rm -rf /tmp/MCS /tmp/MCS.zip && open "/Applications/Midi Cast Switcher.app"
         """
     }
 
