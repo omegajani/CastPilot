@@ -271,6 +271,8 @@ class MidiController: ObservableObject {
 
     /// One-time migration: if a track has no slotAssignments populated but the legacy
     /// slotOverrides + member.versionPosition data is present, build slotAssignments from it.
+    /// Two phases so overrides win over defaults — otherwise a default versionPosition can
+    /// stomp on another member's explicit override.
     private func migrateLegacySlots() {
         for r in config.roles.indices {
             let members = config.roles[r].members
@@ -279,10 +281,18 @@ class MidiController: ObservableObject {
                 track.syncSlotAssignmentsToVersionCount()
                 let hasAnyAssignment = track.slotAssignments.contains(where: { $0 != nil })
                 if !hasAnyAssignment && !members.isEmpty {
-                    // Derive slot for each member: override if present, else versionPosition
+                    // Phase 1: explicit overrides claim their slots first.
                     for member in members {
-                        let slot = track.slotOverrides[member.id.uuidString] ?? member.versionPosition
-                        if slot >= 1 && slot <= track.versionCount {
+                        if let slot = track.slotOverrides[member.id.uuidString],
+                           slot >= 1 && slot <= track.versionCount {
+                            track.slotAssignments[slot - 1] = member.id.uuidString
+                        }
+                    }
+                    // Phase 2: members without an override fill their versionPosition slot,
+                    // but only if it's still free (don't displace anyone).
+                    for member in members where track.slotOverrides[member.id.uuidString] == nil {
+                        let slot = member.versionPosition
+                        if slot >= 1 && slot <= track.versionCount && track.slotAssignments[slot - 1] == nil {
                             track.slotAssignments[slot - 1] = member.id.uuidString
                         }
                     }
@@ -366,12 +376,78 @@ class MidiController: ObservableObject {
     }
 }
 
+// MARK: - Update Checker
+
+/// Checks GitHub for the latest release tag and exposes whether an update is available.
+/// Self-replace is blocked by App Sandbox, so the UI offers "Open release page" and
+/// "Copy update command" actions instead of an in-app install.
+class UpdateChecker: ObservableObject {
+    @Published var latestVersion: String? = nil
+    @Published var isChecking = false
+    @Published var lastError: String? = nil
+
+    static let repoSlug = "omegajani/Midi-Cast-Switcher"
+
+    var currentVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
+
+    var updateAvailable: Bool {
+        guard let latest = latestVersion else { return false }
+        return Self.compare(latest, currentVersion) > 0
+    }
+
+    var releasePageURL: URL {
+        URL(string: "https://github.com/\(Self.repoSlug)/releases/latest")!
+    }
+
+    /// One-line shell command that downloads the latest release and replaces the installed
+    /// app — without touching the user's config.json. Same as the README "Update" snippet.
+    static var updateCommand: String {
+        """
+        curl -sL "$(curl -sL https://api.github.com/repos/\(UpdateChecker.repoSlug)/releases/latest | grep browser_download_url | cut -d '\\"' -f 4)" -o /tmp/MCS.zip && unzip -qo /tmp/MCS.zip -d /tmp/MCS && rm -rf "/Applications/Midi Cast Switcher.app" && mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && xattr -cr "/Applications/Midi Cast Switcher.app" && rm -rf /tmp/MCS /tmp/MCS.zip && open "/Applications/Midi Cast Switcher.app"
+        """
+    }
+
+    func check() async {
+        isChecking = true; lastError = nil
+        defer { isChecking = false }
+        let url = URL(string: "https://api.github.com/repos/\(Self.repoSlug)/releases/latest")!
+        do {
+            var req = URLRequest(url: url)
+            req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            let (data, _) = try await URLSession.shared.data(for: req)
+            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let tag = json["tag_name"] as? String {
+                latestVersion = tag.trimmingCharacters(in: CharacterSet(charactersIn: "v "))
+            } else {
+                lastError = "Unerwartetes Antwortformat"
+            }
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Semver-ish comparison. Returns -1, 0, +1 like strcmp.
+    static func compare(_ a: String, _ b: String) -> Int {
+        let pa = a.split(separator: ".").compactMap { Int($0) }
+        let pb = b.split(separator: ".").compactMap { Int($0) }
+        for i in 0..<max(pa.count, pb.count) {
+            let ai = i < pa.count ? pa[i] : 0
+            let bi = i < pb.count ? pb[i] : 0
+            if ai != bi { return ai < bi ? -1 : 1 }
+        }
+        return 0
+    }
+}
+
 // MARK: - App Entry Point
 
 @main
 struct MidiCastSwitcherApp: App {
     @StateObject private var midi = MidiController()
     @StateObject private var emailClient = IMAPClient()
+    @StateObject private var updater = UpdateChecker()
 
     var body: some Scene {
         // Compact live window — stays on top of Nuendo
@@ -384,7 +460,7 @@ struct MidiCastSwitcherApp: App {
 
         // Single config window — Window (not WindowGroup) ensures only one instance
         Window("MCS Einstellungen", id: "config") {
-            ConfigView(midi: midi, emailClient: emailClient)
+            ConfigView(midi: midi, emailClient: emailClient, updater: updater)
         }
         .windowResizability(.contentSize)
 
@@ -533,8 +609,10 @@ struct LiveView: View {
 struct ConfigView: View {
     @ObservedObject var midi: MidiController
     @ObservedObject var emailClient: IMAPClient
+    @ObservedObject var updater: UpdateChecker
     @State private var selectedRoleId: UUID? = nil
     @State private var emailPassword = ""
+    @State private var copyConfirmed = false
 
     private let leftW: CGFloat  = 340
     private let totalH: CGFloat = 580
@@ -682,6 +760,71 @@ struct ConfigView: View {
                     }
                     .padding(14)
                     .onAppear { emailPassword = keychainLoad(account: midi.config.emailConfig.username) ?? "" }
+
+                    Divider()
+
+                    // Update section
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.circle").font(.system(size: 12))
+                            Text("Update").font(.headline)
+                        }
+
+                        HStack(spacing: 8) {
+                            Text("Aktuelle Version:")
+                                .font(.caption).foregroundColor(.secondary)
+                            Text(updater.currentVersion)
+                                .font(.caption).foregroundColor(.primary)
+                            Spacer()
+                            Button {
+                                Task { await updater.check() }
+                            } label: {
+                                if updater.isChecking {
+                                    ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
+                                } else {
+                                    Text("Auf Update prüfen")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(updater.isChecking)
+                        }
+
+                        if let err = updater.lastError {
+                            Text(err).font(.caption2).foregroundColor(.red)
+                        } else if let latest = updater.latestVersion {
+                            if updater.updateAvailable {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "arrow.up.circle.fill")
+                                        .foregroundColor(.accentColor)
+                                    Text("Version \(latest) verfügbar")
+                                        .font(.caption).foregroundColor(.accentColor)
+                                }
+                                HStack(spacing: 6) {
+                                    Button("Auf GitHub öffnen") {
+                                        NSWorkspace.shared.open(updater.releasePageURL)
+                                    }
+                                    .buttonStyle(.bordered).controlSize(.small)
+                                    Button {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(UpdateChecker.updateCommand, forType: .string)
+                                        copyConfirmed = true
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copyConfirmed = false }
+                                    } label: {
+                                        Label(copyConfirmed ? "Kopiert!" : "Befehl kopieren",
+                                              systemImage: copyConfirmed ? "checkmark" : "doc.on.doc")
+                                    }
+                                    .buttonStyle(.borderedProminent).controlSize(.small)
+                                }
+                                Text("Befehl im Terminal einfügen — die Config bleibt erhalten.")
+                                    .font(.caption2).foregroundColor(.secondary)
+                            } else {
+                                Text("Du hast die neueste Version.")
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .padding(14)
                 }
             }
             .frame(width: leftW, height: totalH)

@@ -32,7 +32,7 @@ MCS then calculates the full sequence automatically:
 
 ### One-line install (Terminal)
 
-Downloads the latest release, installs the app to `/Applications`, removes the Gatekeeper quarantine flag, and places the example `config.json` in the right folder:
+Downloads the latest release, installs the app to `/Applications`, removes the Gatekeeper quarantine flag, and places the example `config.json` **only if no config exists yet** (so re-running this never overwrites your settings):
 
 ```bash
 curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && \
@@ -41,10 +41,27 @@ rm -rf "/Applications/Midi Cast Switcher.app" && \
 mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && \
 xattr -cr "/Applications/Midi Cast Switcher.app" && \
 mkdir -p "$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher" && \
-cp /tmp/MCS/config.json "$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json" && \
+CFG="$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json" && \
+[ -f "$CFG" ] || cp /tmp/MCS/config.json "$CFG" && \
 rm -rf /tmp/MCS /tmp/MCS.zip && \
 open "/Applications/Midi Cast Switcher.app"
 ```
+
+### Update (Terminal)
+
+Replaces the installed app with the latest release from GitHub. The `config.json` is left untouched:
+
+```bash
+curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && \
+unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
+rm -rf "/Applications/Midi Cast Switcher.app" && \
+mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && \
+xattr -cr "/Applications/Midi Cast Switcher.app" && \
+rm -rf /tmp/MCS /tmp/MCS.zip && \
+open "/Applications/Midi Cast Switcher.app"
+```
+
+You can also trigger this from inside the app: **Einstellungen → Update → Auf Update prüfen → Befehl kopieren**.
 
 ### Manual install
 
