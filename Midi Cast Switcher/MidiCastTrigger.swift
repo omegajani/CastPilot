@@ -463,7 +463,7 @@ struct MidiCastSwitcherApp: App {
             ConfigView(midi: midi, emailClient: emailClient, updater: updater)
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 960, height: 580)
+        .defaultSize(width: 1000, height: 580)
 
         // Email import window
         Window("MCS Email Import", id: "email") {
@@ -615,7 +615,7 @@ struct ConfigView: View {
     @State private var emailPassword = ""
     @State private var copyConfirmed = false
 
-    private let leftW: CGFloat  = 340
+    private let leftW: CGFloat  = 360
     private let minH:  CGFloat = 580
 
     var body: some View {
@@ -850,7 +850,7 @@ struct ConfigView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 960, minHeight: minH, maxHeight: .infinity)
+        .frame(minWidth: 1000, minHeight: minH, maxHeight: .infinity)
         .onChange(of: midi.config) { midi.saveConfig() }
     }
 }
@@ -861,7 +861,7 @@ struct RoleDetailView: View {
     @Binding var role: Role
     @State private var selectedMemberId: UUID? = nil
 
-    private let trackW: CGFloat  = 360
+    private let trackW: CGFloat  = 380
     private let memberMinW: CGFloat = 260
 
     private func nextFreePosition() -> Int {
@@ -1117,28 +1117,34 @@ struct MidiCommandRow: View {
 
             Text("CH").font(.caption).foregroundColor(.secondary)
             TextField("1", value: $cmd.channel, formatter: channelFmt)
-                .frame(width: 28)
+                .frame(width: 38)
                 .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12).monospacedDigit())
 
             switch cmd.type {
             case .pc:
                 Text("PC").font(.caption).foregroundColor(.secondary)
                 TextField("0", value: $cmd.value1, formatter: midiFmt)
-                    .frame(width: 36).textFieldStyle(.roundedBorder)
+                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12).monospacedDigit())
             case .note:
                 Text("Nr").font(.caption).foregroundColor(.secondary)
                 TextField("0", value: $cmd.value1, formatter: midiFmt)
-                    .frame(width: 36).textFieldStyle(.roundedBorder)
+                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12).monospacedDigit())
                 Text("Vel").font(.caption).foregroundColor(.secondary)
                 TextField("127", value: $cmd.value2, formatter: midiFmt)
-                    .frame(width: 36).textFieldStyle(.roundedBorder)
+                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12).monospacedDigit())
             case .cc:
                 Text("CC").font(.caption).foregroundColor(.secondary)
                 TextField("0", value: $cmd.value1, formatter: midiFmt)
-                    .frame(width: 36).textFieldStyle(.roundedBorder)
+                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12).monospacedDigit())
                 Text("Val").font(.caption).foregroundColor(.secondary)
                 TextField("127", value: $cmd.value2, formatter: midiFmt)
-                    .frame(width: 36).textFieldStyle(.roundedBorder)
+                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12).monospacedDigit())
             }
         }
     }
