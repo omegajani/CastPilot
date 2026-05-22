@@ -30,21 +30,32 @@ MCS then calculates the full sequence automatically:
 
 ## Installation
 
-1. Download `MCS.zip` from the [latest release](../../releases/latest)
-2. Unzip and move `Midi Cast Switcher.app` to your Applications folder
+### One-line install (Terminal)
+
+Downloads the latest release, installs the app to `/Applications`, removes the Gatekeeper quarantine flag, and places the example `config.json` in the right folder:
+
+```bash
+curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && \
+unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
+rm -rf "/Applications/Midi Cast Switcher.app" && \
+mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && \
+xattr -cr "/Applications/Midi Cast Switcher.app" && \
+mkdir -p "$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher" && \
+cp /tmp/MCS/config.json "$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json" && \
+rm -rf /tmp/MCS /tmp/MCS.zip && \
+open "/Applications/Midi Cast Switcher.app"
+```
+
+### Manual install
+
+1. Download `MCS-v*.zip` from the [latest release](../../releases/latest)
+2. Unzip and move `Midi Cast Switcher.app` to `/Applications`
 3. On first launch: right-click → Open (to bypass Gatekeeper on unsigned builds)
-
-### Pre-configured setup
-
-The release includes a `config.json` with an example role/track/member configuration.
-
-To use it, place the file here:
-
-```
-~/Library/Application Support/MidiCastSwitcher/config.json
-```
-
-The folder is created automatically on first launch — you can also let the app start once, then replace the file while it's closed.
+4. Place `config.json` in:
+   ```
+   ~/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json
+   ```
+   The container folder is created automatically the first time the app runs.
 
 ## MIDI Setup in Nuendo
 
