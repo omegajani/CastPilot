@@ -665,6 +665,17 @@ struct RoleDetailView: View {
         role.members[idx].versionPosition = newPos
     }
 
+    /// Applies a new slot value to the track override (or removes it if equal to the member's default).
+    private func applySlot(_ newValue: Int, key: String, member: CastMember,
+                           track: Binding<NuendoTrack>, max maxSlot: Int) {
+        let clamped = min(Swift.max(1, newValue), maxSlot)
+        if clamped == member.versionPosition {
+            track.wrappedValue.slotOverrides.removeValue(forKey: key)
+        } else {
+            track.wrappedValue.slotOverrides[key] = clamped
+        }
+    }
+
     /// One row in the per-track slot table: member name + slot stepper.
     /// Stepper writes the override; if the value equals the member's default versionPosition,
     /// the override is removed (keeps the JSON clean and the "default" indicator visible).
@@ -688,17 +699,11 @@ struct RoleDetailView: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .frame(width: 18, alignment: .trailing)
                 .foregroundColor(isOverridden ? .accentColor : .primary)
-            Stepper("", value: Binding(
-                get: { currentSlot },
-                set: { newValue in
-                    let clamped = min(max(1, newValue), maxSlot)
-                    if clamped == member.versionPosition {
-                        track.wrappedValue.slotOverrides.removeValue(forKey: key)
-                    } else {
-                        track.wrappedValue.slotOverrides[key] = clamped
-                    }
-                }
-            ), in: 1...maxSlot)
+            // Inverted arrows: ↑ decreases (move up in list), ↓ increases (move down)
+            Stepper("",
+                onIncrement: { applySlot(currentSlot - 1, key: key, member: member, track: track, max: maxSlot) },
+                onDecrement: { applySlot(currentSlot + 1, key: key, member: member, track: track, max: maxSlot) }
+            )
             .labelsHidden()
         }
     }
@@ -778,10 +783,11 @@ struct RoleDetailView: View {
                             Text("\(member.versionPosition)")
                                 .frame(width: 24, alignment: .trailing)
                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            Stepper("", value: Binding(
-                                get: { member.versionPosition },
-                                set: { setPosition(for: member.id, to: $0) }
-                            ), in: 1...32)
+                            // Inverted arrows: ↑ moves up in list (slot -1), ↓ moves down (slot +1)
+                            Stepper("",
+                                onIncrement: { setPosition(for: member.id, to: max(1, member.versionPosition - 1)) },
+                                onDecrement: { setPosition(for: member.id, to: min(32, member.versionPosition + 1)) }
+                            )
                             .labelsHidden()
                         }
                         .tag(member.id)
