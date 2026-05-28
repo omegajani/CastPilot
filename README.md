@@ -62,9 +62,28 @@ Iris    [Paul              ▾]
 - macOS 14.0 or later
 - Nuendo or Cubase (any version with Track Versions and MIDI remote)
 
-## Building this branch
+## Install (Terminal)
 
-This branch has **no release artifact** — only the stable `main` branch publishes `.zip` releases. Run from Xcode for now:
+Downloads the latest release of **this branch** (v1.7), installs the app and copies the example `config.json` only if none exists yet:
+
+```bash
+curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/tags/v1.7 | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && \
+unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
+rm -rf "/Applications/Midi Cast Switcher.app" && \
+mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && \
+xattr -cr "/Applications/Midi Cast Switcher.app" && \
+mkdir -p "$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher" && \
+CFG="$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json" && \
+[ -f "$CFG" ] || cp /tmp/MCS/config.json "$CFG" && \
+rm -rf /tmp/MCS /tmp/MCS.zip && \
+open "/Applications/Midi Cast Switcher.app"
+```
+
+> **Note:** This branch is marked as pre-release on GitHub, so `releases/latest` always resolves to the stable v1.6 on `main`. The script above uses the explicit tag `v1.7` to target this branch correctly.
+
+The config from a previous `main` install will be automatically migrated on first launch — old `slotOverrides` are turned into the new `slotAssignments` model with a two-phase pass that preserves overrides.
+
+## Building from source
 
 ```bash
 git clone -b feature/covers git@github.com:omegajani/Midi-Cast-Switcher.git
@@ -72,8 +91,6 @@ cd Midi-Cast-Switcher
 open "Midi Cast Switcher.xcodeproj"
 # Cmd+R in Xcode
 ```
-
-The config from a previous `main` install will be automatically migrated on first launch — old `slotOverrides` are turned into the new `slotAssignments` model with a two-phase pass that preserves overrides.
 
 ## Configuring covers
 
