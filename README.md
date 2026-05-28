@@ -1,107 +1,115 @@
-# MCS — Midi Cast Switcher
+# MCS — Midi Cast Switcher · `feature/covers` branch
 
-A compact macOS utility for live shows that automates Nuendo track version switching based on daily cast assignments.
+> ⚠️ **Experimental branch.** This is the development version with ballet-cover and track-variant support. For the stable release without these features, switch to the [`main`](https://github.com/omegajani/Midi-Cast-Switcher/tree/main) branch.
+
+A compact macOS utility for live shows that automates Nuendo track version switching based on daily cast assignments — including ballet covers borrowing playback from absent principals.
 
 ## What it does
 
 In live shows running with Nuendo, each role (e.g. *NOVA*, *AURORA*, *ECHO*) has multiple performers, each recorded on a separate **Track Version**. Every day the cast changes — MCS sends the exact MIDI sequence needed to select each track and navigate to the correct version in one click.
 
-Instead of manually sending dozens of MIDI commands, you configure once:
-- Which MIDI note/CC selects each Nuendo track
-- How many versions a track has
-- Which slot (1-based position) belongs to which performer
+Beyond the basic principal-per-slot mapping, this branch adds two related concepts:
 
-MCS then calculates the full sequence automatically:  
-`select track → prev × (versions−1) → next × (position−1)`
+### Cover (ballet doubles)
+
+Ballet performers who don't sing themselves but borrow a principal's playback. Two modes:
+- **Fixed** — e.g. *Clara covert Aurora* always uses Mira's playback.
+- **Dynamic** — e.g. *Max covert Luna*; MCS automatically picks the Luna-principal who is **not** live in the show today and uses that playback.
+
+### Ballett-Variant tracks
+
+Many Nuendo tracks ship two flavours of each principal — a plain version and a *"& Ballett"* variant. Linking a variant member to its principal lets MCS automatically pick the right version per track:
+
+- **Principal live** → prefer the principal's own slot, fall back to the variant slot if the track doesn't have a plain version.
+- **Cover active** → prefer the variant slot ("& Ballett"), fall back to the principal slot if no variant exists.
+
+No global "ballet today" toggle needed — the rules above resolve correctly from the slot assignments alone.
+
+## Live window
+
+```
+MCS                ✉ ✉⚙ ⚙
+─────────────────────────
+Aurora    [Mira            ▾]
+Nova   [Paul              ▾]
+Echo     [Nina Roth (C)     ▾]
+        ↳ via Lena & Ballett
+Luna    [—                 ▾]
+Orion    [Lena             ▾]
+Iris    [Paul              ▾]
+─────────────────────────
+       [ ⌁ Send to Nuendo ]
+```
+
+- Covers appear under a divider with `(C)` suffix and a sub-label showing the resolved playback source.
+- Ballett-variant members are hidden from the picker; only "real" principals + covers are selectable.
 
 ## Features
 
-- **Compact live window** — always on top of Nuendo, ~280px wide, one dropdown per role
+- **Compact live window** — always on top of Nuendo, ~280px wide
 - **Send to Nuendo** — fires the complete MIDI sequence for all assigned roles in one click
-- **Config window** — full role/track/member editor, opens separately via ⚙
-- **Email import** — fetches the daily cast email via IMAP, parses role assignments, shows a confirmation view before applying
-- **Slot uniqueness** — each performer occupies a unique version slot; stepper swaps on conflict
-- **Virtual MIDI source** — appears as *MidiCastSwitcher Source* in Nuendo/Cubase, no hardware needed
+- **Resizable config window** — fixed left + tracks columns, flexible members column
+- **Email import** — fetches the daily cast email via IMAP, parses role assignments, shows a confirmation view; unmatched roles flagged in red
+- **Auto-resolved covers** — cross-role name matching (Sofia-in-Aurora counts as Sofia-live in Echo even though the UUIDs differ)
+- **Per-track slot assignment** — drag-and-drop-style dropdowns; the Versionen +/- buttons add or remove slot rows
+- **Virtual MIDI source** — appears as *MidiCastSwitcher Source* in Nuendo/Cubase
+- **Hardware MIDI output** — choose a USB interface or Apple Network MIDI session as alternative output
+- **In-app update check** — Settings → Update → Auf Update prüfen
+- **Debug trace** — fireMidi prints the resolved per-track logic and complete MIDI byte schedule to the Xcode console
 
 ## Requirements
 
 - macOS 14.0 or later
 - Nuendo or Cubase (any version with Track Versions and MIDI remote)
 
-## Installation
+## Building this branch
 
-### One-line install (Terminal)
-
-Downloads the latest release, installs the app to `/Applications`, removes the Gatekeeper quarantine flag, and places the example `config.json` **only if no config exists yet** (so re-running this never overwrites your settings):
+This branch has **no release artifact** — only the stable `main` branch publishes `.zip` releases. Run from Xcode for now:
 
 ```bash
-curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && \
-unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
-rm -rf "/Applications/Midi Cast Switcher.app" && \
-mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && \
-xattr -cr "/Applications/Midi Cast Switcher.app" && \
-mkdir -p "$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher" && \
-CFG="$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json" && \
-[ -f "$CFG" ] || cp /tmp/MCS/config.json "$CFG" && \
-rm -rf /tmp/MCS /tmp/MCS.zip && \
-open "/Applications/Midi Cast Switcher.app"
+git clone -b feature/covers git@github.com:omegajani/Midi-Cast-Switcher.git
+cd Midi-Cast-Switcher
+open "Midi Cast Switcher.xcodeproj"
+# Cmd+R in Xcode
 ```
 
-### Update (Terminal)
+The config from a previous `main` install will be automatically migrated on first launch — old `slotOverrides` are turned into the new `slotAssignments` model with a two-phase pass that preserves overrides.
 
-Replaces the installed app with the latest release from GitHub. The `config.json` is left untouched:
+## Configuring covers
 
-```bash
-curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && \
-unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
-rm -rf "/Applications/Midi Cast Switcher.app" && \
-mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && \
-xattr -cr "/Applications/Midi Cast Switcher.app" && \
-rm -rf /tmp/MCS /tmp/MCS.zip && \
-open "/Applications/Midi Cast Switcher.app"
-```
+### Add a cover
 
-You can also trigger this from inside the app: **Einstellungen → Update → Auf Update prüfen → Befehl kopieren**.
+Settings → pick a role → under **Cover** click **+ Cover**:
+- Name (e.g. *Nina Roth*)
+- Playback dropdown:
+  - **Auto (dynamisch)** — MCS picks the absent principal at fire time
+  - or any specific principal — fixed mapping
 
-### Manual install
+### Mark a member as ballet-variant
 
-1. Download `MCS-v*.zip` from the [latest release](../../releases/latest)
-2. Unzip and move `Midi Cast Switcher.app` to `/Applications`
-3. On first launch: right-click → Open (to bypass Gatekeeper on unsigned builds)
-4. Place `config.json` in:
-   ```
-   ~/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json
-   ```
-   The container folder is created automatically the first time the app runs.
+Settings → pick a role → in the Darsteller list, on any member row click the small grey **"als Ballett-Variante markieren"** link → pick the parent principal. The member becomes italic with a `↪ Variante von X` sub-label and disappears from the live picker.
+
+### Naming convention (not enforced)
+
+Variants are typically named `{Principal} & Ballett` so Nuendo's track version names match — but any name works since the linking is by UUID, not by name.
 
 ## MIDI Setup in Nuendo
 
 1. Open **Studio → MIDI Remote** (or Macros/Generic Remote depending on version)
-2. Select *MidiCastSwitcher Source* as input device
+2. Select *MidiCastSwitcher Source* as input device (or your USB interface / Network MIDI session)
 3. Map the MIDI messages to **Track Version: Select Previous** and **Track Version: Select Next** macros
 4. Assign each track's select command to the corresponding **Select Track** action
+
+**Slot order matters:** MCS slot N maps to Nuendo's N-th track version. Configure them in the exact same order both sides.
 
 ## Email Import
 
 MCS can fetch the daily cast email directly via IMAP:
 
-1. Click the **✉ envelope icon** in the live window
-2. Click ⚙ to enter your IMAP credentials (password is stored in macOS Keychain)
-3. Click **E-Mail abrufen** — the app fetches the latest email with *"Cast Information"* in the subject
-4. Review the parsed assignments on the right, adjust if needed, click **Besetzung übernehmen**
+1. **Setup once:** Einstellungen → Email Import → enter server, port, username, password (stored in macOS Keychain).
+2. **Each show:** envelope-open icon in the live window → fetches the latest email with *"Cast Information"* in the subject, auto-applies recognised assignments, opens the verification window. Unrecognised roles are shown in red.
 
-The role ↔ email mapping is configured per role via the **Keyword** field in Settings (e.g. `AURORA`, `NOVA`, `ECHO`).
-
-## Configuration
-
-| Field | Description |
-|---|---|
-| Delay (ms) | Pause between consecutive MIDI messages |
-| Prev/Next Version Command | Global MIDI command mapped to Nuendo's track version navigation |
-| Track → Select Command | MIDI message that selects this specific track in Nuendo |
-| Track → Versionen | Total number of track versions (used for the reset step) |
-| Darsteller → Slot | 1-based position of this performer in Nuendo's version list |
-| Keyword | String to match in the cast email subject/body for this role |
+The role ↔ email mapping is configured per role via the **Keyword** field (e.g. `AURORA`, `NOVA`, `ECHO`).
 
 ## Built with
 
