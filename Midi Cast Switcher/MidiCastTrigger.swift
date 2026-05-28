@@ -84,6 +84,10 @@ struct NuendoTrack: Codable, Identifiable, Equatable {
     /// (one member can only occupy one slot per track).
     mutating func setMember(_ memberId: UUID?, atSlot slot: Int) {
         guard slot >= 1 && slot <= versionCount else { return }
+        // Defensive: guarantee the backing array matches versionCount, otherwise the
+        // slotAssignments[idx] write below could crash if a previous mutation raised
+        // versionCount but forgot to sync.
+        syncSlotAssignmentsToVersionCount()
         let idx = slot - 1
         // If we're assigning a real member, clear them from any other slot first.
         if let mid = memberId?.uuidString {
@@ -106,11 +110,44 @@ struct NuendoTrack: Codable, Identifiable, Equatable {
     }
 }
 
-// A cast member: just a name and their position (1-based) in Nuendo's Track Versions list
+// A cast member: just a name and their position (1-based) in Nuendo's Track Versions list.
+// `coverVariantOf` points to another principal in the same role; if set, this member is
+// the "ballet variant" of that principal — used automatically when a cover borrows the
+// principal's playback. Variant members never appear in the live picker.
 struct CastMember: Codable, Identifiable, Equatable {
     var id = UUID()
     var name: String = "Neuer Darsteller"
     var versionPosition: Int = 1
+    var coverVariantOf: UUID? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, versionPosition, coverVariantOf
+    }
+
+    init(id: UUID = UUID(), name: String = "Neuer Darsteller",
+         versionPosition: Int = 1, coverVariantOf: UUID? = nil) {
+        self.id = id; self.name = name
+        self.versionPosition = versionPosition
+        self.coverVariantOf = coverVariantOf
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id              = (try? c.decodeIfPresent(UUID.self,   forKey: .id))              ?? UUID()
+        name            = (try? c.decodeIfPresent(String.self, forKey: .name))            ?? "Neuer Darsteller"
+        versionPosition = (try? c.decodeIfPresent(Int.self,    forKey: .versionPosition)) ?? 1
+        coverVariantOf  = try? c.decodeIfPresent(UUID.self,    forKey: .coverVariantOf)
+    }
+}
+
+/// A Cover (ballet double) doesn't have their own track version. They borrow the playback
+/// of a principal — either a fixed one or, dynamically, the principal who is absent today.
+struct Cover: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String = "Neuer Cover"
+    /// nil → dynamic: at fire time, pick the principal not selected anywhere.
+    /// non-nil → fixed: always use this principal's slot for this cover.
+    var fixedSourceMemberId: UUID? = nil
 }
 
 struct Role: Codable, Identifiable, Equatable {
@@ -119,16 +156,19 @@ struct Role: Codable, Identifiable, Equatable {
     var emailKeyword: String = ""
     var tracks: [NuendoTrack] = []
     var members: [CastMember] = []
+    var covers: [Cover] = []
     var selectedMemberId: UUID? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, name, emailKeyword, tracks, members, selectedMemberId
+        case id, name, emailKeyword, tracks, members, covers, selectedMemberId
     }
 
     init(id: UUID = UUID(), name: String = "Neue Rolle", emailKeyword: String = "",
-         tracks: [NuendoTrack] = [], members: [CastMember] = [], selectedMemberId: UUID? = nil) {
+         tracks: [NuendoTrack] = [], members: [CastMember] = [],
+         covers: [Cover] = [], selectedMemberId: UUID? = nil) {
         self.id = id; self.name = name; self.emailKeyword = emailKeyword
-        self.tracks = tracks; self.members = members; self.selectedMemberId = selectedMemberId
+        self.tracks = tracks; self.members = members
+        self.covers = covers; self.selectedMemberId = selectedMemberId
     }
 
     init(from decoder: Decoder) throws {
@@ -138,7 +178,49 @@ struct Role: Codable, Identifiable, Equatable {
         emailKeyword   = (try? c.decodeIfPresent(String.self,        forKey: .emailKeyword))   ?? ""
         tracks         = (try? c.decodeIfPresent([NuendoTrack].self, forKey: .tracks))         ?? []
         members        = (try? c.decodeIfPresent([CastMember].self,  forKey: .members))        ?? []
+        covers         = (try? c.decodeIfPresent([Cover].self,       forKey: .covers))         ?? []
         selectedMemberId = try? c.decodeIfPresent(UUID.self, forKey: .selectedMemberId)
+    }
+
+    /// Resolves which principal's playback should be used right now.
+    /// Returns the principal, whether the selection is a cover (for UI hints), and whether
+    /// the dynamic resolution was ambiguous (multiple principals absent → first one used).
+    func resolvePlaybackSource(allRoles: [Role]) -> (member: CastMember, isCover: Bool, ambiguous: Bool)? {
+        guard let selId = selectedMemberId else { return nil }
+        // Direct hit on a principal.
+        if let m = members.first(where: { $0.id == selId }) {
+            return (m, false, false)
+        }
+        // Otherwise it's a cover.
+        guard let cover = covers.first(where: { $0.id == selId }) else { return nil }
+        if let fixed = cover.fixedSourceMemberId,
+           let m = members.first(where: { $0.id == fixed }) {
+            return (m, true, false)
+        }
+        // Dynamic resolution: among real principals (variants excluded), find those whose
+        // PERSON is not physically present anywhere in the show. Same person can appear
+        // under the same name in multiple roles (e.g. Sofia in Aurora and Echo as separate
+        // CastMember rows with different UUIDs but the same name) — so we match by name.
+        // Cover selections don't count as "present" (the person isn't physically there;
+        // their playback is just being borrowed).
+        func normalized(_ s: String) -> String {
+            s.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let liveNames: Set<String> = Set(
+            allRoles.compactMap { otherRole -> String? in
+                guard let selId = otherRole.selectedMemberId else { return nil }
+                // Only count Principal selections (not Covers, not Variants).
+                guard let m = otherRole.members.first(where: {
+                    $0.id == selId && $0.coverVariantOf == nil
+                }) else { return nil }
+                return normalized(m.name)
+            }
+        )
+        let absent = members
+            .filter { $0.coverVariantOf == nil && !liveNames.contains(normalized($0.name)) }
+            .sorted { $0.versionPosition < $1.versionPosition }
+        guard let first = absent.first else { return nil }
+        return (first, true, absent.count > 1)
     }
 }
 
@@ -149,7 +231,12 @@ struct EmailConfig: Codable, Equatable {
 }
 
 struct AppConfig: Codable, Equatable {
-    var delayMs: Int = 50
+    /// Pause between consecutive MIDI commands. Empirically Nuendo's MIDI Remote works
+    /// better with short, snappy gaps than long pauses.
+    var delayMs: Int = 100
+    /// Extra pause inserted between role command-blocks. Originally added to give Nuendo
+    /// breathing room, but in practice short gaps work fine here too.
+    var interRoleDelayMs: Int = 100
     var prevVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127)
     var nextVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127)
     var roles: [Role] = []
@@ -157,14 +244,16 @@ struct AppConfig: Codable, Equatable {
     var midiOutputName: String = ""   // empty = virtual source
 
     enum CodingKeys: String, CodingKey {
-        case delayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName
+        case delayMs, interRoleDelayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName
     }
 
-    init(delayMs: Int = 50,
+    init(delayMs: Int = 100,
+         interRoleDelayMs: Int = 100,
          prevVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127),
          nextVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127),
          roles: [Role] = [], emailConfig: EmailConfig = EmailConfig(), midiOutputName: String = "") {
         self.delayMs = delayMs
+        self.interRoleDelayMs = interRoleDelayMs
         self.prevVersionCommand = prevVersionCommand
         self.nextVersionCommand = nextVersionCommand
         self.roles = roles
@@ -174,7 +263,8 @@ struct AppConfig: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        delayMs            = (try? c.decodeIfPresent(Int.self,          forKey: .delayMs))            ?? 50
+        delayMs            = (try? c.decodeIfPresent(Int.self,          forKey: .delayMs))            ?? 100
+        interRoleDelayMs   = (try? c.decodeIfPresent(Int.self,          forKey: .interRoleDelayMs))   ?? 100
         prevVersionCommand = (try? c.decodeIfPresent(MidiCommand.self,  forKey: .prevVersionCommand)) ?? MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127)
         nextVersionCommand = (try? c.decodeIfPresent(MidiCommand.self,  forKey: .nextVersionCommand)) ?? MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127)
         roles              = (try? c.decodeIfPresent([Role].self,        forKey: .roles))              ?? []
@@ -310,31 +400,81 @@ class MidiController: ObservableObject {
     //   2. Send prevVersionCommand × (versionCount - 1) to reset to the first version
     //   3. Send nextVersionCommand × (versionPosition - 1) to navigate to the desired version
     func fireMidi() {
-        var sequence: [MidiCommand] = []
+        // Schedule commands with absolute timestamps. Inserts an extra pause
+        // (`interRoleDelayMs`) between role command-blocks, so Nuendo's MIDI Remote
+        // gets breathing room between roles — without this, multi-role sends sometimes
+        // dropped triggers under MIDI load.
+        struct ScheduledCmd { let cmd: MidiCommand; let delayMs: Int }
+        var schedule: [ScheduledCmd] = []
+        var t = 0
+        var trace: [String] = []
 
         for role in config.roles {
-            guard let selId = role.selectedMemberId,
-                  let member = role.members.first(where: { $0.id == selId }) else { continue }
+            guard let resolved = role.resolvePlaybackSource(allRoles: config.roles) else { continue }
+            let variant = role.members.first(where: { $0.coverVariantOf == resolved.member.id })
+
+            var roleHadCommands = false
+            trace.append("ROLE \(role.name): resolved=\(resolved.member.name) isCover=\(resolved.isCover) variant=\(variant?.name ?? "—")")
 
             for track in role.tracks {
-                // Skip the track entirely if this member isn't assigned to any slot in it.
-                guard let targetSlot = track.slot(of: member.id) else { continue }
-                sequence.append(track.selectCommand)
+                let principalSlot = track.slot(of: resolved.member.id)
+                let variantSlot   = variant.flatMap { track.slot(of: $0.id) }
+                let resolvedSlot: Int? = resolved.isCover
+                    ? (variantSlot ?? principalSlot)
+                    : (principalSlot ?? variantSlot)
+                guard let targetSlot = resolvedSlot else {
+                    trace.append("  \(track.name): SKIP (no slot for principal or variant)")
+                    continue
+                }
+                roleHadCommands = true
                 let resetSteps = max(0, track.versionCount - 1)
-                for _ in 0..<resetSteps {
-                    sequence.append(config.prevVersionCommand)
-                }
                 let forwardSteps = max(0, targetSlot - 1)
-                for _ in 0..<forwardSteps {
-                    sequence.append(config.nextVersionCommand)
+                trace.append("  \(track.name): target=\(targetSlot) (principalSlot=\(principalSlot.map(String.init) ?? "—") variantSlot=\(variantSlot.map(String.init) ?? "—")) → select+prev×\(resetSteps)+next×\(forwardSteps)")
+
+                // Send select TWICE to reinforce the track focus (Nuendo's MIDI Remote sometimes
+                // misses the first select when under MIDI load — the redundancy is cheap insurance).
+                schedule.append(.init(cmd: track.selectCommand, delayMs: t))
+                t += config.delayMs
+                schedule.append(.init(cmd: track.selectCommand, delayMs: t))
+                t += config.delayMs
+                for _ in 0..<resetSteps {
+                    schedule.append(.init(cmd: config.prevVersionCommand, delayMs: t))
+                    t += config.delayMs
                 }
+                // Re-affirm the track selection right before the forward navigation, in case
+                // intermediate prev events nudged Nuendo's focus elsewhere.
+                if forwardSteps > 0 {
+                    schedule.append(.init(cmd: track.selectCommand, delayMs: t))
+                    t += config.delayMs
+                }
+                for _ in 0..<forwardSteps {
+                    schedule.append(.init(cmd: config.nextVersionCommand, delayMs: t))
+                    t += config.delayMs
+                }
+            }
+
+            // Extra pause between roles so Nuendo can settle before the next role's commands.
+            if roleHadCommands && config.interRoleDelayMs > 0 {
+                t += config.interRoleDelayMs
+                trace.append("  ---- inter-role gap: \(config.interRoleDelayMs)ms ----")
             }
         }
 
-        for (i, cmd) in sequence.enumerated() {
-            let delay = Double(i * config.delayMs) / 1000.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                self.send(command: cmd)
+        trace.append("---- MIDI schedule (\(schedule.count) commands, delay=\(config.delayMs)ms, interRole=\(config.interRoleDelayMs)ms) ----")
+        for (i, entry) in schedule.enumerated() {
+            let cmdStr: String
+            switch entry.cmd.type {
+            case .note: cmdStr = "Note  CH\(entry.cmd.channel) Nr\(entry.cmd.value1) vel\(entry.cmd.value2)"
+            case .pc:   cmdStr = "PC    CH\(entry.cmd.channel) prog\(entry.cmd.value1)"
+            case .cc:   cmdStr = "CC    CH\(entry.cmd.channel) ctrl\(entry.cmd.value1)=\(entry.cmd.value2)"
+            }
+            trace.append(String(format: "  [%2d] t=%5dms %@", i, entry.delayMs, cmdStr))
+        }
+        print(trace.joined(separator: "\n"))
+
+        for entry in schedule {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(entry.delayMs) / 1000.0) {
+                self.send(command: entry.cmd)
             }
         }
     }
@@ -543,22 +683,58 @@ struct LiveView: View {
             ScrollView {
                 VStack(spacing: 4) {
                     ForEach($midi.config.roles) { $role in
-                        HStack(spacing: 8) {
-                            Text(role.name)
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(.primary)
-                                .frame(width: 52, alignment: .leading)
-                                .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 8) {
+                                Text(role.name)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.primary)
+                                    .frame(width: 52, alignment: .leading)
+                                    .lineLimit(1)
 
-                            Picker("", selection: $role.selectedMemberId) {
-                                Text("—").tag(UUID?.none)
-                                ForEach(role.members.sorted { $0.versionPosition < $1.versionPosition }) { member in
-                                    Text(member.name).tag(UUID?.some(member.id))
+                                Picker("", selection: $role.selectedMemberId) {
+                                    Text("—").tag(UUID?.none)
+                                    // Only "real" principals — variants are hidden from the picker.
+                                    ForEach(role.members
+                                        .filter { $0.coverVariantOf == nil }
+                                        .sorted { $0.versionPosition < $1.versionPosition }) { member in
+                                        Text(member.name).tag(UUID?.some(member.id))
+                                    }
+                                    if !role.covers.isEmpty {
+                                        Divider()
+                                        ForEach(role.covers) { cover in
+                                            Text("\(cover.name) (C)").tag(UUID?.some(cover.id))
+                                        }
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .labelsHidden()
+                                .frame(maxWidth: .infinity)
+                            }
+
+                            // Sub-label when a cover is selected: show the resolved playback source,
+                            // preferring the variant name ("Sofia & Ballett") if one exists.
+                            if let selId = role.selectedMemberId,
+                               role.covers.contains(where: { $0.id == selId }),
+                               let resolved = role.resolvePlaybackSource(allRoles: midi.config.roles) {
+                                let displayName: String = {
+                                    if let variant = role.members.first(where: { $0.coverVariantOf == resolved.member.id }) {
+                                        return variant.name
+                                    }
+                                    return resolved.member.name
+                                }()
+                                HStack(spacing: 4) {
+                                    Spacer().frame(width: 52)
+                                    Text("↳ via \(displayName)")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                    if resolved.ambiguous {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .font(.system(size: 9))
+                                            .foregroundColor(.orange)
+                                            .help("Mehrere Principals abwesend — prüfen")
+                                    }
                                 }
                             }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                            .frame(maxWidth: .infinity)
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
@@ -700,6 +876,17 @@ struct ConfigView: View {
                                 .frame(width: 54)
                                 .textFieldStyle(.roundedBorder)
                             Text("ms").font(.caption).foregroundColor(.secondary)
+                                .help("Pause zwischen einzelnen MIDI-Commands")
+                        }
+
+                        HStack {
+                            Text("Pause zw. Rollen:")
+                                .font(.caption).foregroundColor(.secondary)
+                            TextField("ms", value: $midi.config.interRoleDelayMs, formatter: NumberFormatter())
+                                .frame(width: 54)
+                                .textFieldStyle(.roundedBorder)
+                            Text("ms").font(.caption).foregroundColor(.secondary)
+                                .help("Zusätzliche Pause zwischen Command-Blöcken verschiedener Rollen, damit Nuendo bei Multi-Role-Sends nicht überlastet wird.")
                         }
 
                         VStack(alignment: .leading, spacing: 4) {
@@ -996,24 +1183,55 @@ struct RoleDetailView: View {
                     let sortedIndices = role.members.indices.sorted { role.members[$0].versionPosition < role.members[$1].versionPosition }
                     ForEach(sortedIndices, id: \.self) { idx in
                         let member = role.members[idx]
-                        HStack(spacing: 8) {
-                            TextField("Name", text: Binding(
-                                get: { role.members[idx].name },
-                                set: { role.members[idx].name = $0 }
-                            ))
-                            Spacer()
-                            Text("Slot")
-                                .font(.caption).foregroundColor(.secondary)
-                            Text("\(member.versionPosition)")
-                                .frame(width: 24, alignment: .trailing)
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            // Inverted arrows: ↑ moves up in list (slot -1), ↓ moves down (slot +1)
-                            Stepper("",
-                                onIncrement: { setPosition(for: member.id, to: max(1, member.versionPosition - 1)) },
-                                onDecrement: { setPosition(for: member.id, to: min(32, member.versionPosition + 1)) }
-                            )
-                            .labelsHidden()
+                        let isVariant = member.coverVariantOf != nil
+                        let parentName = isVariant
+                            ? (role.members.first(where: { $0.id == member.coverVariantOf })?.name ?? "?")
+                            : ""
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 8) {
+                                TextField("Name", text: Binding(
+                                    get: { role.members[idx].name },
+                                    set: { role.members[idx].name = $0 }
+                                ))
+                                .italic(isVariant)
+                                Spacer()
+                                // Reorder arrows only — no visible position number. ↑ moves up in
+                                // the list, ↓ moves down. versionPosition just drives sort order.
+                                Stepper("",
+                                    onIncrement: { setPosition(for: member.id, to: max(1, member.versionPosition - 1)) },
+                                    onDecrement: { setPosition(for: member.id, to: min(32, member.versionPosition + 1)) }
+                                )
+                                .labelsHidden()
+                                .help("Reihenfolge im Live-Picker")
+                            }
+                            // Variant link, displayed as a clickable label opening a menu.
+                            // - For Principals (no link): "als Ballett-Variante markieren"
+                            // - For Variants: "↪ Variante von <Name>" — click to change/remove
+                            let principalsForLink = role.members
+                                .filter { $0.id != member.id && $0.coverVariantOf == nil }
+                                .sorted { $0.versionPosition < $1.versionPosition }
+                            Menu {
+                                Button("— (kein Link)") {
+                                    role.members[idx].coverVariantOf = nil
+                                }
+                                if !principalsForLink.isEmpty {
+                                    Divider()
+                                    ForEach(principalsForLink) { p in
+                                        Button(p.name) {
+                                            role.members[idx].coverVariantOf = p.id
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Text(isVariant ? "↪ Variante von \(parentName)" : "als Ballett-Variante markieren")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .padding(.leading, 2)
                         }
+                        .padding(.vertical, 2)
                         .tag(member.id)
                     }
                     .onDelete { offsets in
@@ -1029,11 +1247,65 @@ struct RoleDetailView: View {
                         m.versionPosition = nextFreePosition()
                         role.members.append(m)
                         selectedMemberId = m.id
-                        // Auto-raise versionCount on all tracks to cover the new member count
+                        // Auto-raise versionCount on all tracks to cover the new member count.
+                        // Must also sync slotAssignments — otherwise the array stays shorter than
+                        // versionCount and the slot picker crashes with "Index out of range".
                         let count = role.members.count
                         for i in role.tracks.indices where role.tracks[i].versionCount < count {
                             role.tracks[i].versionCount = count
+                            role.tracks[i].syncSlotAssignmentsToVersionCount()
                         }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+                .padding(.bottom, 4)
+
+                Divider()
+
+                // Cover section
+                Text("Cover")
+                    .font(.headline)
+                    .padding([.horizontal, .top], 12)
+                    .padding(.bottom, 4)
+
+                List {
+                    ForEach($role.covers) { $cover in
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextField("Name", text: $cover.name)
+                                .font(.system(size: 12, weight: .medium))
+                            HStack(spacing: 4) {
+                                Text("Playback:")
+                                    .font(.caption2).foregroundColor(.secondary)
+                                Picker("", selection: Binding<String>(
+                                    get: { cover.fixedSourceMemberId?.uuidString ?? "" },
+                                    set: { newValue in
+                                        cover.fixedSourceMemberId = newValue.isEmpty
+                                            ? nil
+                                            : UUID(uuidString: newValue)
+                                    }
+                                )) {
+                                    Text("Auto (dynamisch)").tag("")
+                                    // Only real principals, never variants
+                                    ForEach(role.members
+                                        .filter { $0.coverVariantOf == nil }
+                                        .sorted { $0.versionPosition < $1.versionPosition }) { m in
+                                        Text(m.name).tag(m.id.uuidString)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .onDelete { role.covers.remove(atOffsets: $0) }
+                }
+
+                HStack {
+                    Button("+ Cover") {
+                        role.covers.append(Cover())
                     }
                     .buttonStyle(.bordered)
                 }
@@ -1080,17 +1352,24 @@ struct MidiSequencePreview: View {
 
     private func lines() -> [String] {
         var out: [String] = []
+        // Mirror fireMidi: for a Principal preview, prefer the principal's own slot,
+        // fall back to the variant slot (e.g. for "Lena" with only "Lena & Ballett" tracks).
+        let variant = role.members.first(where: { $0.coverVariantOf == member.id })
         for track in role.tracks {
-            guard let targetSlot = track.slot(of: member.id) else {
+            let principalSlot = track.slot(of: member.id)
+            let variantSlot   = variant.flatMap { track.slot(of: $0.id) }
+            guard let targetSlot = principalSlot ?? variantSlot else {
                 out.append("[\(track.name)] — nicht zugewiesen, übersprungen")
                 continue
             }
+            let usedVariant = (principalSlot == nil) && variantSlot != nil
+            let suffix = usedVariant ? "  (→ \(variant?.name ?? "Variante"))" : ""
             out.append("[\(track.name)] → \(cmdStr(track.selectCommand))")
             let r = max(0, track.versionCount - 1)
             if r > 0 { out.append("  ↑ Prev ×\(r)  (auf Anfang)") }
             let f = max(0, targetSlot - 1)
-            if f > 0 { out.append("  ↓ Next ×\(f)  → Slot \(targetSlot)") }
-            else      { out.append("  → Slot 1 (erste Version)") }
+            if f > 0 { out.append("  ↓ Next ×\(f)  → Slot \(targetSlot)\(suffix)") }
+            else      { out.append("  → Slot 1 (erste Version)\(suffix)") }
         }
         return out
     }
@@ -1215,9 +1494,11 @@ class IMAPClient: ObservableObject {
                 $0.keyword.uppercased() == role.emailKeyword.uppercased()
             }) else { continue }
             let first = row.name.components(separatedBy: " ").first?.lowercased() ?? ""
+            // Match only against real Principals — Ballett-variants are auto-resolved in fireMidi.
             let match = role.members.first {
-                ($0.name.components(separatedBy: " ").first?.lowercased() ?? "") == first
-                    || $0.name.lowercased().contains(first)
+                $0.coverVariantOf == nil
+                    && (($0.name.components(separatedBy: " ").first?.lowercased() ?? "") == first
+                        || $0.name.lowercased().contains(first))
             }
             pending[role.id] = match?.id
         }
