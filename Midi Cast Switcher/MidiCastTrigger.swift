@@ -158,17 +158,22 @@ struct Role: Codable, Identifiable, Equatable {
     var members: [CastMember] = []
     var covers: [Cover] = []
     var selectedMemberId: UUID? = nil
+    /// When set, this role sings the lines of the linked role whenever that role is "cut".
+    /// In that case the Ballett-variant track versions are preferred (they contain the combined playback).
+    var borrowsLinesFromRoleId: UUID? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, name, emailKeyword, tracks, members, covers, selectedMemberId
+        case id, name, emailKeyword, tracks, members, covers, selectedMemberId, borrowsLinesFromRoleId
     }
 
     init(id: UUID = UUID(), name: String = "Neue Rolle", emailKeyword: String = "",
          tracks: [NuendoTrack] = [], members: [CastMember] = [],
-         covers: [Cover] = [], selectedMemberId: UUID? = nil) {
+         covers: [Cover] = [], selectedMemberId: UUID? = nil,
+         borrowsLinesFromRoleId: UUID? = nil) {
         self.id = id; self.name = name; self.emailKeyword = emailKeyword
         self.tracks = tracks; self.members = members
         self.covers = covers; self.selectedMemberId = selectedMemberId
+        self.borrowsLinesFromRoleId = borrowsLinesFromRoleId
     }
 
     init(from decoder: Decoder) throws {
@@ -179,7 +184,19 @@ struct Role: Codable, Identifiable, Equatable {
         tracks         = (try? c.decodeIfPresent([NuendoTrack].self, forKey: .tracks))         ?? []
         members        = (try? c.decodeIfPresent([CastMember].self,  forKey: .members))        ?? []
         covers         = (try? c.decodeIfPresent([Cover].self,       forKey: .covers))         ?? []
-        selectedMemberId = try? c.decodeIfPresent(UUID.self, forKey: .selectedMemberId)
+        selectedMemberId      = try? c.decodeIfPresent(UUID.self, forKey: .selectedMemberId)
+        borrowsLinesFromRoleId = try? c.decodeIfPresent(UUID.self, forKey: .borrowsLinesFromRoleId)
+    }
+
+    /// Returns true when the role this role borrows lines from currently has "cut" selected.
+    /// In that case fireMidi() will prefer the Ballett-variant track versions.
+    func borrowedRoleIsCut(allRoles: [Role]) -> Bool {
+        guard let borrowedId = borrowsLinesFromRoleId,
+              let borrowedRole = allRoles.first(where: { $0.id == borrowedId }),
+              let selId = borrowedRole.selectedMemberId,
+              let selMember = borrowedRole.members.first(where: { $0.id == selId })
+        else { return false }
+        return selMember.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) == "cut"
     }
 
     /// Resolves which principal's playback should be used right now.
@@ -414,12 +431,15 @@ class MidiController: ObservableObject {
             let variant = role.members.first(where: { $0.coverVariantOf == resolved.member.id })
 
             var roleHadCommands = false
-            trace.append("ROLE \(role.name): resolved=\(resolved.member.name) isCover=\(resolved.isCover) variant=\(variant?.name ?? "—")")
+            let borrowedCut = role.borrowedRoleIsCut(allRoles: config.roles)
+            trace.append("ROLE \(role.name): resolved=\(resolved.member.name) isCover=\(resolved.isCover) variant=\(variant?.name ?? "—") borrowedRoleCut=\(borrowedCut)")
 
             for track in role.tracks {
                 let principalSlot = track.slot(of: resolved.member.id)
                 let variantSlot   = variant.flatMap { track.slot(of: $0.id) }
-                let resolvedSlot: Int? = resolved.isCover
+                // Prefer variant when: (a) a cover is selected, or (b) the linked "borrowed" role is cut.
+                let preferVariant = resolved.isCover || borrowedCut
+                let resolvedSlot: Int? = preferVariant
                     ? (variantSlot ?? principalSlot)
                     : (principalSlot ?? variantSlot)
                 guard let targetSlot = resolvedSlot else {
@@ -735,6 +755,17 @@ struct LiveView: View {
                                     }
                                 }
                             }
+                            // Sub-label when the borrowed role is cut: show which role's lines are included.
+                            if role.borrowedRoleIsCut(allRoles: midi.config.roles),
+                               let borrowedId = role.borrowsLinesFromRoleId,
+                               let borrowedRole = midi.config.roles.first(where: { $0.id == borrowedId }) {
+                                HStack(spacing: 4) {
+                                    Spacer().frame(width: 52)
+                                    Text("⊕ \(borrowedRole.name)")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
@@ -1025,7 +1056,7 @@ struct ConfigView: View {
             // Right panel: role detail
             Group {
                 if let idx = midi.config.roles.firstIndex(where: { $0.id == selectedRoleId }) {
-                    RoleDetailView(role: $midi.config.roles[idx])
+                    RoleDetailView(role: $midi.config.roles[idx], allRoles: midi.config.roles)
                 } else {
                     VStack(spacing: 10) {
                         Image(systemName: "arrow.left")
@@ -1048,6 +1079,7 @@ struct ConfigView: View {
 
 struct RoleDetailView: View {
     @Binding var role: Role
+    var allRoles: [Role] = []
     @State private var selectedMemberId: UUID? = nil
 
     private let trackW: CGFloat  = 380
@@ -1177,7 +1209,28 @@ struct RoleDetailView: View {
                 Text("Darsteller")
                     .font(.headline)
                     .padding([.horizontal, .top], 12)
-                    .padding(.bottom, 6)
+                    .padding(.bottom, 4)
+
+                // "Singt auch für" — when the linked role is "cut", this role uses Ballett-variants.
+                HStack(spacing: 6) {
+                    Text("Singt auch für:")
+                        .font(.caption).foregroundColor(.secondary)
+                    Picker("", selection: Binding<String>(
+                        get: { role.borrowsLinesFromRoleId?.uuidString ?? "" },
+                        set: { newValue in
+                            role.borrowsLinesFromRoleId = newValue.isEmpty ? nil : UUID(uuidString: newValue)
+                        }
+                    )) {
+                        Text("—").tag("")
+                        ForEach(allRoles.filter { $0.id != role.id }) { r in
+                            Text(r.name).tag(r.id.uuidString)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
 
                 List(selection: $selectedMemberId) {
                     let sortedIndices = role.members.indices.sorted { role.members[$0].versionPosition < role.members[$1].versionPosition }
