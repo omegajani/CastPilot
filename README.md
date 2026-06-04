@@ -62,26 +62,28 @@ Iris    [Paul              ▾]
 - macOS 14.0 or later
 - Nuendo or Cubase (any version with Track Versions and MIDI remote)
 
-## Install (Terminal)
+## Install (Terminal — only needed once)
 
-Downloads the latest release of **this branch** (v1.7), installs the app and copies the example `config.json` only if none exists yet:
+From **v1.9** onward MCS updates itself in-app (Einstellungen → Update → *Jetzt aktualisieren*). You only need the Terminal command for the **first** install (or when migrating from a sandboxed build ≤ 1.8 — a sandboxed app can't replace itself).
+
+Downloads the latest release of **this branch**, installs the app and copies the example `config.json` only if none exists yet:
 
 ```bash
-curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/tags/v1.7 | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && \
+curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/tags/v1.9 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
 unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
 rm -rf "/Applications/Midi Cast Switcher.app" && \
 mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && \
 xattr -cr "/Applications/Midi Cast Switcher.app" && \
-mkdir -p "$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher" && \
-CFG="$HOME/Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json" && \
+mkdir -p "$HOME/Library/Application Support/MidiCastSwitcher" && \
+CFG="$HOME/Library/Application Support/MidiCastSwitcher/config.json" && \
 [ -f "$CFG" ] || cp /tmp/MCS/config.json "$CFG" && \
 rm -rf /tmp/MCS /tmp/MCS.zip && \
 open "/Applications/Midi Cast Switcher.app"
 ```
 
-> **Note:** This branch is marked as pre-release on GitHub, so `releases/latest` always resolves to the stable v1.6 on `main`. The script above uses the explicit tag `v1.7` to target this branch correctly.
+> **Note:** This branch is marked as pre-release on GitHub, so `releases/latest` always resolves to the stable v1.6 on `main`. The script above uses the explicit tag `v1.9` to target this branch correctly.
 
-The config from a previous `main` install will be automatically migrated on first launch — old `slotOverrides` are turned into the new `slotAssignments` model with a two-phase pass that preserves overrides.
+> **Config location:** Since v1.9 the sandbox is off, so config lives at `~/Library/Application Support/MidiCastSwitcher/config.json`. Upgrading from an older sandboxed build automatically migrates the config out of the old container on first launch.
 
 ## Building from source
 
