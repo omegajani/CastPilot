@@ -263,9 +263,10 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 2.0;
+				INFOPLIST_KEY_CFBundleDisplayName = CastPilot;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.janoslinde.Midi-Cast-Switcher";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = CastPilot;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -296,9 +297,10 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 2.0;
+				INFOPLIST_KEY_CFBundleDisplayName = CastPilot;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.janoslinde.Midi-Cast-Switcher";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = CastPilot;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

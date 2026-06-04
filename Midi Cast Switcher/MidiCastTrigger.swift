@@ -583,7 +583,7 @@ class UpdateChecker: ObservableObject {
         // Note: inside single quotes the shell takes characters literally, so we want '"' (just a
         // quote), not '\"' (backslash + quote — that's what tripped cut(1) before).
         """
-        curl -sL "$(curl -sL https://api.github.com/repos/\(UpdateChecker.repoSlug)/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && unzip -qo /tmp/MCS.zip -d /tmp/MCS && rm -rf "/Applications/Midi Cast Switcher.app" && mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && xattr -cr "/Applications/Midi Cast Switcher.app" && rm -rf /tmp/MCS /tmp/MCS.zip && open "/Applications/Midi Cast Switcher.app"
+        curl -sL "$(curl -sL https://api.github.com/repos/\(UpdateChecker.repoSlug)/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && unzip -qo /tmp/MCS.zip -d /tmp/MCS && rm -rf "/Applications/Midi Cast Switcher.app" "/Applications/CastPilot.app" && mv "/tmp/MCS/CastPilot.app" /Applications/ && xattr -cr "/Applications/CastPilot.app" && rm -rf /tmp/MCS /tmp/MCS.zip && open "/Applications/CastPilot.app"
         """
     }
 
@@ -646,24 +646,30 @@ class UpdateChecker: ObservableObject {
                 installError = "Entpacken fehlgeschlagen."; return
             }
 
-            // 4. Locate the new .app and the install target (where we currently run from).
-            let newApp = unpack.appendingPathComponent("Midi Cast Switcher.app")
+            // 4. Locate the new .app (named CastPilot.app since the 2.0 rebrand).
+            let newApp = unpack.appendingPathComponent("CastPilot.app")
             guard FileManager.default.fileExists(atPath: newApp.path) else {
                 installError = "App im Zip nicht gefunden."; return
             }
-            let target = Bundle.main.bundlePath   // e.g. /Applications/Midi Cast Switcher.app
+            // Install next to where we currently run from (usually /Applications), always under
+            // the new name. `oldBundle` is whatever we launched as — for users coming from the
+            // pre-rebrand build that's "Midi Cast Switcher.app", which we remove.
+            let oldBundle = Bundle.main.bundlePath
+            let installDir = (oldBundle as NSString).deletingLastPathComponent
+            let finalTarget = (installDir as NSString).appendingPathComponent("CastPilot.app")
 
             // 5. Write a relaunch script and launch it detached. It waits for our PID to exit,
-            //    then replaces the bundle, clears quarantine and reopens.
+            //    removes the old bundle, moves the new one into place, clears quarantine, reopens.
             let script = """
             #!/bin/sh
-            APP_PID="$1"; NEW="$2"; TARGET="$3"
+            APP_PID="$1"; NEW="$2"; OLD="$3"; FINAL="$4"
             while kill -0 "$APP_PID" 2>/dev/null; do sleep 0.2; done
             sleep 0.3
-            rm -rf "$TARGET"
-            mv "$NEW" "$TARGET"
-            xattr -cr "$TARGET"
-            open "$TARGET"
+            rm -rf "$OLD"
+            rm -rf "$FINAL"
+            mv "$NEW" "$FINAL"
+            xattr -cr "$FINAL"
+            open "$FINAL"
             """
             let scriptURL = work.appendingPathComponent("relaunch.sh")
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
@@ -672,7 +678,7 @@ class UpdateChecker: ObservableObject {
             task.executableURL = URL(fileURLWithPath: "/bin/sh")
             task.arguments = [scriptURL.path,
                               String(ProcessInfo.processInfo.processIdentifier),
-                              newApp.path, target]
+                              newApp.path, oldBundle, finalTarget]
             try task.run()
 
             // 6. Quit so the detached script can replace the running bundle.
@@ -705,7 +711,7 @@ struct MidiCastSwitcherApp: App {
 
     var body: some Scene {
         // Compact live window — stays on top of Nuendo
-        WindowGroup("MCS Live", id: "live") {
+        WindowGroup("CastPilot Live", id: "live") {
             LiveView(midi: midi, emailClient: emailClient)
                 .onAppear { setupLiveWindow() }
         }
@@ -713,14 +719,14 @@ struct MidiCastSwitcherApp: App {
         .defaultSize(width: 280, height: 380)
 
         // Single config window — Window (not WindowGroup) ensures only one instance
-        Window("MCS Einstellungen", id: "config") {
+        Window("CastPilot Einstellungen", id: "config") {
             ConfigView(midi: midi, emailClient: emailClient, updater: updater)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1000, height: 580)
 
         // Email import window
-        Window("MCS Email Import", id: "email") {
+        Window("CastPilot Email Import", id: "email") {
             EmailView(midi: midi, emailClient: emailClient)
         }
         .windowResizability(.contentSize)
@@ -729,7 +735,7 @@ struct MidiCastSwitcherApp: App {
     private func setupLiveWindow() {
         DispatchQueue.main.async {
             for window in NSApplication.shared.windows {
-                if window.title.contains("Live") || window.title == "MCS" {
+                if window.title.contains("Live") {
                     window.level = .floating
                     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
                     window.titlebarAppearsTransparent = true
@@ -752,7 +758,7 @@ struct LiveView: View {
         VStack(spacing: 0) {
             // Title bar row
             HStack {
-                Text("MCS")
+                Text("CastPilot")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(.secondary)
                 Spacer()
@@ -1135,7 +1141,7 @@ struct ConfigView: View {
                                         }
                                         Button("Abbrechen", role: .cancel) { }
                                     } message: {
-                                        Text("MCS lädt die neue Version herunter, ersetzt sich selbst und startet neu. Die Konfiguration bleibt erhalten.")
+                                        Text("CastPilot lädt die neue Version herunter, ersetzt sich selbst und startet neu. Die Konfiguration bleibt erhalten.")
                                     }
 
                                     Button("Auf GitHub öffnen") {
