@@ -4,6 +4,7 @@ import CoreMIDI
 import AppKit
 import Network
 import Security
+import UniformTypeIdentifiers
 
 // MARK: - Models
 
@@ -259,16 +260,21 @@ struct AppConfig: Codable, Equatable {
     var roles: [Role] = []
     var emailConfig: EmailConfig = EmailConfig()
     var midiOutputName: String = ""   // empty = virtual source
+    /// Name of the currently loaded show. Part of the full config, so it persists in
+    /// config.json and travels inside every saved .castpilot show file. Shown in the
+    /// live and config windows.
+    var showName: String = "Unbenannt"
 
     enum CodingKeys: String, CodingKey {
-        case delayMs, interRoleDelayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName
+        case delayMs, interRoleDelayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName, showName
     }
 
     init(delayMs: Int = 100,
          interRoleDelayMs: Int = 100,
          prevVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127),
          nextVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127),
-         roles: [Role] = [], emailConfig: EmailConfig = EmailConfig(), midiOutputName: String = "") {
+         roles: [Role] = [], emailConfig: EmailConfig = EmailConfig(), midiOutputName: String = "",
+         showName: String = "Unbenannt") {
         self.delayMs = delayMs
         self.interRoleDelayMs = interRoleDelayMs
         self.prevVersionCommand = prevVersionCommand
@@ -276,6 +282,7 @@ struct AppConfig: Codable, Equatable {
         self.roles = roles
         self.emailConfig = emailConfig
         self.midiOutputName = midiOutputName
+        self.showName = showName
     }
 
     init(from decoder: Decoder) throws {
@@ -287,6 +294,7 @@ struct AppConfig: Codable, Equatable {
         roles              = (try? c.decodeIfPresent([Role].self,        forKey: .roles))              ?? []
         emailConfig        = (try? c.decodeIfPresent(EmailConfig.self,  forKey: .emailConfig))        ?? EmailConfig()
         midiOutputName     = (try? c.decodeIfPresent(String.self,       forKey: .midiOutputName))     ?? ""
+        showName           = (try? c.decodeIfPresent(String.self,       forKey: .showName))           ?? "Unbenannt"
     }
 }
 
@@ -304,7 +312,9 @@ class MidiController: ObservableObject {
 
     @Published var config: AppConfig = AppConfig()
     @Published var availableDestinations: [MIDIDestinationInfo] = []
+    @Published var availableShows: [String] = []
     let configURL: URL
+    let showsDir: URL
 
     init() {
         let fm = FileManager.default
@@ -314,6 +324,10 @@ class MidiController: ObservableObject {
             try? fm.createDirectory(at: appDir, withIntermediateDirectories: true)
         }
         configURL = appDir.appendingPathComponent("config.json")
+        showsDir = appDir.appendingPathComponent("Shows")
+        if !fm.fileExists(atPath: showsDir.path) {
+            try? fm.createDirectory(at: showsDir, withIntermediateDirectories: true)
+        }
 
         // One-time migration: earlier (sandboxed) builds stored config inside the app container.
         // Now that the sandbox is off, configURL points at ~/Library/Application Support/...
@@ -328,8 +342,75 @@ class MidiController: ObservableObject {
         }
 
         loadConfig()
+        refreshShows()
         setupMIDI()
         refreshDestinations()
+    }
+
+    // MARK: - Shows (named full-config snapshots)
+
+    /// Sanitizes a show name into a safe filename.
+    private func showFileName(_ name: String) -> String {
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        return (cleaned.isEmpty ? "Unbenannt" : cleaned) + ".castpilot"
+    }
+
+    /// Scans the Shows folder and refreshes the list of available show names.
+    func refreshShows() {
+        let fm = FileManager.default
+        let files = (try? fm.contentsOfDirectory(at: showsDir, includingPropertiesForKeys: nil)) ?? []
+        availableShows = files
+            .filter { $0.pathExtension == "castpilot" }
+            .map { $0.deletingPathExtension().lastPathComponent }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// Writes the current full config to the library under config.showName.
+    func saveShow() {
+        let url = showsDir.appendingPathComponent(showFileName(config.showName))
+        if let encoded = try? JSONEncoder().encode(config) {
+            try? encoded.write(to: url)
+            refreshShows()
+        }
+    }
+
+    /// Loads a show from the library into the active config (auto-saved to config.json via onChange).
+    func loadShow(named name: String) {
+        let url = showsDir.appendingPathComponent(name + ".castpilot")
+        guard let data = try? Data(contentsOf: url),
+              var loaded = try? JSONDecoder().decode(AppConfig.self, from: data) else { return }
+        loaded.showName = name
+        self.config = loaded
+        migrateLegacySlots()
+    }
+
+    /// Deletes a show from the library.
+    func deleteShow(named name: String) {
+        let url = showsDir.appendingPathComponent(name + ".castpilot")
+        try? FileManager.default.removeItem(at: url)
+        refreshShows()
+    }
+
+    /// Exports the current config to an arbitrary location (Finder save panel).
+    func exportShow(to url: URL) {
+        if let encoded = try? JSONEncoder().encode(config) {
+            try? encoded.write(to: url)
+        }
+    }
+
+    /// Imports a show file: loads it into the active config and copies it into the library.
+    func importShow(from url: URL) {
+        guard let data = try? Data(contentsOf: url),
+              var loaded = try? JSONDecoder().decode(AppConfig.self, from: data) else { return }
+        // Fall back to the file's base name if the show carried no name.
+        if loaded.showName.trimmingCharacters(in: .whitespaces).isEmpty || loaded.showName == "Unbenannt" {
+            loaded.showName = url.deletingPathExtension().lastPathComponent
+        }
+        self.config = loaded
+        migrateLegacySlots()
+        saveShow()   // copy into library so it shows up in the dropdown
     }
 
     func setupMIDI() {
@@ -574,7 +655,30 @@ class UpdateChecker: ObservableObject {
     }
 
     var releasePageURL: URL {
-        URL(string: "https://github.com/\(Self.repoSlug)/releases/latest")!
+        // The releases list page — not /latest, which on GitHub resolves to the newest
+        // NON-prerelease (v1.6 on main) and would hide the feature/covers prereleases.
+        URL(string: "https://github.com/\(Self.repoSlug)/releases")!
+    }
+
+    /// Fetches the releases list (incl. prereleases) and returns the highest-semver release.
+    /// We must NOT use /releases/latest — GitHub returns only the newest non-prerelease there,
+    /// which is v1.6 on main, so the feature/covers prereleases would never be seen.
+    private func bestRelease() async throws -> (tag: String, zipURL: URL?)? {
+        let url = URL(string: "https://api.github.com/repos/\(Self.repoSlug)/releases?per_page=30")!
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        let (data, _) = try await URLSession.shared.data(for: req)
+        guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+        var best: (tag: String, dict: [String: Any])? = nil
+        for r in arr where (r["draft"] as? Bool) != true {
+            guard let raw = r["tag_name"] as? String else { continue }
+            let v = raw.trimmingCharacters(in: CharacterSet(charactersIn: "v "))
+            if best == nil || Self.compare(v, best!.tag) > 0 { best = (v, r) }
+        }
+        guard let b = best else { return nil }
+        let assets = b.dict["assets"] as? [[String: Any]] ?? []
+        let zip = assets.compactMap { $0["browser_download_url"] as? String }.first { $0.hasSuffix(".zip") }
+        return (b.tag, zip.flatMap { URL(string: $0) })
     }
 
     /// One-line shell command that downloads the latest release and replaces the installed
@@ -583,23 +687,18 @@ class UpdateChecker: ObservableObject {
         // Note: inside single quotes the shell takes characters literally, so we want '"' (just a
         // quote), not '\"' (backslash + quote — that's what tripped cut(1) before).
         """
-        curl -sL "$(curl -sL https://api.github.com/repos/\(UpdateChecker.repoSlug)/releases/latest | grep browser_download_url | cut -d '"' -f 4)" -o /tmp/MCS.zip && unzip -qo /tmp/MCS.zip -d /tmp/MCS && rm -rf "/Applications/Midi Cast Switcher.app" "/Applications/CastPilot.app" && mv "/tmp/MCS/CastPilot.app" /Applications/ && xattr -cr "/Applications/CastPilot.app" && rm -rf /tmp/MCS /tmp/MCS.zip && open "/Applications/CastPilot.app"
+        curl -sL "$(curl -sL https://api.github.com/repos/\(UpdateChecker.repoSlug)/releases | grep browser_download_url | head -1 | cut -d '"' -f 4)" -o /tmp/MCS.zip && unzip -qo /tmp/MCS.zip -d /tmp/MCS && rm -rf "/Applications/Midi Cast Switcher.app" "/Applications/CastPilot.app" && mv "/tmp/MCS/CastPilot.app" /Applications/ && xattr -cr "/Applications/CastPilot.app" && rm -rf /tmp/MCS /tmp/MCS.zip && open "/Applications/CastPilot.app"
         """
     }
 
     func check() async {
         isChecking = true; lastError = nil
         defer { isChecking = false }
-        let url = URL(string: "https://api.github.com/repos/\(Self.repoSlug)/releases/latest")!
         do {
-            var req = URLRequest(url: url)
-            req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            let (data, _) = try await URLSession.shared.data(for: req)
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let tag = json["tag_name"] as? String {
-                latestVersion = tag.trimmingCharacters(in: CharacterSet(charactersIn: "v "))
+            if let best = try await bestRelease() {
+                latestVersion = best.tag
             } else {
-                lastError = "Unerwartetes Antwortformat"
+                lastError = "Keine Releases gefunden"
             }
         } catch {
             lastError = error.localizedDescription
@@ -615,16 +714,8 @@ class UpdateChecker: ObservableObject {
         isInstalling = true; installError = nil
         defer { isInstalling = false }
         do {
-            // 1. Resolve the .zip asset URL from the latest release.
-            let apiURL = URL(string: "https://api.github.com/repos/\(Self.repoSlug)/releases/latest")!
-            var req = URLRequest(url: apiURL)
-            req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            let (meta, _) = try await URLSession.shared.data(for: req)
-            guard let json = try JSONSerialization.jsonObject(with: meta) as? [String: Any],
-                  let assets = json["assets"] as? [[String: Any]],
-                  let zipURLStr = assets.compactMap({ $0["browser_download_url"] as? String })
-                                        .first(where: { $0.hasSuffix(".zip") }),
-                  let zipURL = URL(string: zipURLStr)
+            // 1. Resolve the .zip asset URL from the highest-semver release (incl. prereleases).
+            guard let best = try await bestRelease(), let zipURL = best.zipURL
             else { installError = "Kein Zip im Release gefunden."; return }
 
             // 2. Download the zip. A programmatic download does NOT set the com.apple.quarantine
@@ -758,9 +849,16 @@ struct LiveView: View {
         VStack(spacing: 0) {
             // Title bar row
             HStack {
-                Text("CastPilot")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("CastPilot")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.secondary)
+                    if !midi.config.showName.isEmpty {
+                        Text(midi.config.showName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                    }
+                }
                 Spacer()
                 // Quick import: fetch + apply immediately, then open email window
                 Button {
@@ -922,6 +1020,7 @@ struct ConfigView: View {
     @State private var emailPassword = ""
     @State private var copyConfirmed = false
     @State private var showInstallConfirm = false
+    @State private var confirmDeleteShow = false
 
     private let leftW: CGFloat  = 360
     private let minH:  CGFloat = 580
@@ -931,6 +1030,55 @@ struct ConfigView: View {
             // Left panel: role list + global navigation settings
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    // Show section — named full-config snapshots
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Show")
+                            .font(.headline)
+
+                        HStack(spacing: 4) {
+                            Text("Name:").font(.caption).foregroundColor(.secondary)
+                            TextField("Show-Name", text: $midi.config.showName)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+
+                        HStack(spacing: 4) {
+                            Text("Laden:").font(.caption).foregroundColor(.secondary)
+                            Picker("", selection: Binding<String>(
+                                get: { midi.availableShows.contains(midi.config.showName) ? midi.config.showName : "" },
+                                set: { newValue in if !newValue.isEmpty { midi.loadShow(named: newValue) } }
+                            )) {
+                                Text("—").tag("")
+                                ForEach(midi.availableShows, id: \.self) { Text($0).tag($0) }
+                            }
+                            .labelsHidden()
+                        }
+
+                        HStack(spacing: 6) {
+                            Button("Speichern") { midi.saveShow() }
+                                .buttonStyle(.borderedProminent).controlSize(.small)
+                            Button("Exportieren…") { exportShow() }
+                                .buttonStyle(.bordered).controlSize(.small)
+                            Button("Importieren…") { importShow() }
+                                .buttonStyle(.bordered).controlSize(.small)
+                        }
+                        HStack(spacing: 6) {
+                            Button("Löschen", role: .destructive) { confirmDeleteShow = true }
+                                .buttonStyle(.bordered).controlSize(.small)
+                                .disabled(!midi.availableShows.contains(midi.config.showName))
+                                .confirmationDialog("Show löschen: \(midi.config.showName)?",
+                                                    isPresented: $confirmDeleteShow) {
+                                    Button("Löschen", role: .destructive) { midi.deleteShow(named: midi.config.showName) }
+                                    Button("Abbrechen", role: .cancel) { }
+                                }
+                        }
+                    }
+                    .padding([.horizontal, .top], 14)
+                    .padding(.bottom, 10)
+                    .onAppear { midi.refreshShows() }
+
+                    Divider()
+
                     Text("Rollen")
                         .font(.headline)
                         .padding([.horizontal, .top], 14)
@@ -1199,6 +1347,29 @@ struct ConfigView: View {
         }
         .frame(minWidth: 1000, minHeight: minH, maxHeight: .infinity)
         .onChange(of: midi.config) { midi.saveConfig() }
+    }
+
+    // MARK: - Show export / import (free files via Finder)
+
+    private func exportShow() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = midi.config.showName + ".castpilot"
+        if let ct = UTType(filenameExtension: "castpilot") { panel.allowedContentTypes = [ct] }
+        if panel.runModal() == .OK, let url = panel.url {
+            midi.exportShow(to: url)
+        }
+    }
+
+    private func importShow() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        var types: [UTType] = [.json]
+        if let ct = UTType(filenameExtension: "castpilot") { types.insert(ct, at: 0) }
+        panel.allowedContentTypes = types
+        if panel.runModal() == .OK, let url = panel.url {
+            midi.importShow(from: url)
+        }
     }
 }
 
