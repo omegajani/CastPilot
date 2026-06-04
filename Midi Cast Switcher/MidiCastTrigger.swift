@@ -314,6 +314,19 @@ class MidiController: ObservableObject {
             try? fm.createDirectory(at: appDir, withIntermediateDirectories: true)
         }
         configURL = appDir.appendingPathComponent("config.json")
+
+        // One-time migration: earlier (sandboxed) builds stored config inside the app container.
+        // Now that the sandbox is off, configURL points at ~/Library/Application Support/...
+        // If the new location is empty but the old container has a config, copy it over so
+        // existing users keep all their roles/tracks after updating to the unsandboxed build.
+        if !fm.fileExists(atPath: configURL.path) {
+            let legacy = fm.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Containers/com.janoslinde.Midi-Cast-Switcher/Data/Library/Application Support/MidiCastSwitcher/config.json")
+            if fm.fileExists(atPath: legacy.path) {
+                try? fm.copyItem(at: legacy, to: configURL)
+            }
+        }
+
         loadConfig()
         setupMIDI()
         refreshDestinations()
@@ -539,12 +552,15 @@ class MidiController: ObservableObject {
 // MARK: - Update Checker
 
 /// Checks GitHub for the latest release tag and exposes whether an update is available.
-/// Self-replace is blocked by App Sandbox, so the UI offers "Open release page" and
-/// "Copy update command" actions instead of an in-app install.
+/// Since the App Sandbox is disabled, the app can download the release zip and replace
+/// itself in place (via a detached relaunch script), so the UI offers a real 1-click update.
+/// The "Copy update command" path is kept only as a fallback when the in-app install fails.
 class UpdateChecker: ObservableObject {
     @Published var latestVersion: String? = nil
     @Published var isChecking = false
     @Published var lastError: String? = nil
+    @Published var isInstalling = false
+    @Published var installError: String? = nil
 
     static let repoSlug = "omegajani/Midi-Cast-Switcher"
 
@@ -587,6 +603,82 @@ class UpdateChecker: ObservableObject {
             }
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Downloads the latest release zip, unpacks it with ditto (which preserves the bundle's
+    /// ad-hoc code signature), then hands off to a detached shell script that waits for this
+    /// process to quit, swaps the app bundle in place, clears quarantine and relaunches.
+    /// Requires the sandbox to be OFF (a sandboxed app — and any child it spawns — cannot
+    /// write to /Applications).
+    func downloadAndInstall() async {
+        isInstalling = true; installError = nil
+        defer { isInstalling = false }
+        do {
+            // 1. Resolve the .zip asset URL from the latest release.
+            let apiURL = URL(string: "https://api.github.com/repos/\(Self.repoSlug)/releases/latest")!
+            var req = URLRequest(url: apiURL)
+            req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            let (meta, _) = try await URLSession.shared.data(for: req)
+            guard let json = try JSONSerialization.jsonObject(with: meta) as? [String: Any],
+                  let assets = json["assets"] as? [[String: Any]],
+                  let zipURLStr = assets.compactMap({ $0["browser_download_url"] as? String })
+                                        .first(where: { $0.hasSuffix(".zip") }),
+                  let zipURL = URL(string: zipURLStr)
+            else { installError = "Kein Zip im Release gefunden."; return }
+
+            // 2. Download the zip. A programmatic download does NOT set the com.apple.quarantine
+            //    xattr, so the relaunched app won't trip Gatekeeper.
+            let (tmpZip, _) = try await URLSession.shared.download(from: zipURL)
+            let work = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MCSUpdate-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+            let zipDest = work.appendingPathComponent("MCS.zip")
+            try FileManager.default.moveItem(at: tmpZip, to: zipDest)
+
+            // 3. Unpack with ditto (better than unzip for .app bundles + signatures).
+            let unpack = work.appendingPathComponent("unpacked")
+            let ditto = Process()
+            ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            ditto.arguments = ["-xk", zipDest.path, unpack.path]
+            try ditto.run(); ditto.waitUntilExit()
+            guard ditto.terminationStatus == 0 else {
+                installError = "Entpacken fehlgeschlagen."; return
+            }
+
+            // 4. Locate the new .app and the install target (where we currently run from).
+            let newApp = unpack.appendingPathComponent("Midi Cast Switcher.app")
+            guard FileManager.default.fileExists(atPath: newApp.path) else {
+                installError = "App im Zip nicht gefunden."; return
+            }
+            let target = Bundle.main.bundlePath   // e.g. /Applications/Midi Cast Switcher.app
+
+            // 5. Write a relaunch script and launch it detached. It waits for our PID to exit,
+            //    then replaces the bundle, clears quarantine and reopens.
+            let script = """
+            #!/bin/sh
+            APP_PID="$1"; NEW="$2"; TARGET="$3"
+            while kill -0 "$APP_PID" 2>/dev/null; do sleep 0.2; done
+            sleep 0.3
+            rm -rf "$TARGET"
+            mv "$NEW" "$TARGET"
+            xattr -cr "$TARGET"
+            open "$TARGET"
+            """
+            let scriptURL = work.appendingPathComponent("relaunch.sh")
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/bin/sh")
+            task.arguments = [scriptURL.path,
+                              String(ProcessInfo.processInfo.processIdentifier),
+                              newApp.path, target]
+            try task.run()
+
+            // 6. Quit so the detached script can replace the running bundle.
+            NSApp.terminate(nil)
+        } catch {
+            installError = error.localizedDescription
         }
     }
 
@@ -823,6 +915,7 @@ struct ConfigView: View {
     @State private var selectedRoleId: UUID? = nil
     @State private var emailPassword = ""
     @State private var copyConfirmed = false
+    @State private var showInstallConfirm = false
 
     private let leftW: CGFloat  = 360
     private let minH:  CGFloat = 580
@@ -1021,24 +1114,52 @@ struct ConfigView: View {
                                     Text("Version \(latest) verfügbar")
                                         .font(.caption).foregroundColor(.accentColor)
                                 }
-                                HStack(spacing: 6) {
+
+                                if updater.isInstalling {
+                                    HStack(spacing: 8) {
+                                        ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
+                                        Text("Lade herunter & installiere…")
+                                            .font(.caption).foregroundColor(.secondary)
+                                    }
+                                } else {
+                                    Button {
+                                        showInstallConfirm = true
+                                    } label: {
+                                        Label("Jetzt aktualisieren", systemImage: "arrow.down.circle.fill")
+                                    }
+                                    .buttonStyle(.borderedProminent).controlSize(.small)
+                                    .confirmationDialog("Version \(latest) installieren?",
+                                                        isPresented: $showInstallConfirm) {
+                                        Button("Installieren & neu starten") {
+                                            Task { await updater.downloadAndInstall() }
+                                        }
+                                        Button("Abbrechen", role: .cancel) { }
+                                    } message: {
+                                        Text("MCS lädt die neue Version herunter, ersetzt sich selbst und startet neu. Die Konfiguration bleibt erhalten.")
+                                    }
+
                                     Button("Auf GitHub öffnen") {
                                         NSWorkspace.shared.open(updater.releasePageURL)
                                     }
-                                    .buttonStyle(.bordered).controlSize(.small)
+                                    .buttonStyle(.borderless).controlSize(.small)
+                                }
+
+                                // Fallback: if the in-app install failed, surface the error and
+                                // the old copy-to-Terminal command as a manual escape hatch.
+                                if let ierr = updater.installError {
+                                    Text("Automatisches Update fehlgeschlagen: \(ierr)")
+                                        .font(.caption2).foregroundColor(.red)
                                     Button {
                                         NSPasteboard.general.clearContents()
                                         NSPasteboard.general.setString(UpdateChecker.updateCommand, forType: .string)
                                         copyConfirmed = true
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copyConfirmed = false }
                                     } label: {
-                                        Label(copyConfirmed ? "Kopiert!" : "Befehl kopieren",
+                                        Label(copyConfirmed ? "Kopiert!" : "Befehl kopieren (Fallback)",
                                               systemImage: copyConfirmed ? "checkmark" : "doc.on.doc")
                                     }
-                                    .buttonStyle(.borderedProminent).controlSize(.small)
+                                    .buttonStyle(.bordered).controlSize(.small)
                                 }
-                                Text("Befehl im Terminal einfügen — die Config bleibt erhalten.")
-                                    .font(.caption2).foregroundColor(.secondary)
                             } else {
                                 Text("Du hast die neueste Version.")
                                     .font(.caption).foregroundColor(.secondary)
