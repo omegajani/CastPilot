@@ -1,6 +1,8 @@
-# MCS — Midi Cast Switcher · `feature/covers` branch
+# CastPilot · `feature/covers` branch
 
 > ⚠️ **Experimental branch.** This is the development version with ballet-cover and track-variant support. For the stable release without these features, switch to the [`main`](https://github.com/omegajani/Midi-Cast-Switcher/tree/main) branch.
+
+> **Rebrand:** formerly *Midi Cast Switcher (MCS)*. Since **v2.0** the app is named **CastPilot** (`CastPilot.app`). The bundle ID, GitHub repo and the Nuendo MIDI input name (*MidiCastSwitcher Source*) are unchanged, so existing configs and Nuendo setups keep working.
 
 A compact macOS utility for live shows that automates Nuendo track version switching based on daily cast assignments — including ballet covers borrowing playback from absent principals.
 
@@ -66,22 +68,22 @@ Iris    [Paul              ▾]
 
 From **v1.9** onward MCS updates itself in-app (Einstellungen → Update → *Jetzt aktualisieren*). You only need the Terminal command for the **first** install (or when migrating from a sandboxed build ≤ 1.8 — a sandboxed app can't replace itself).
 
-Downloads the latest release of **this branch**, installs the app and copies the example `config.json` only if none exists yet:
+Downloads the latest release of **this branch**, removes any old `Midi Cast Switcher.app`, installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
 
 ```bash
-curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/tags/v1.9 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
+curl -sL "$(curl -sL https://api.github.com/repos/omegajani/Midi-Cast-Switcher/releases/tags/v2.0 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
 unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
-rm -rf "/Applications/Midi Cast Switcher.app" && \
-mv "/tmp/MCS/Midi Cast Switcher.app" /Applications/ && \
-xattr -cr "/Applications/Midi Cast Switcher.app" && \
+rm -rf "/Applications/Midi Cast Switcher.app" "/Applications/CastPilot.app" && \
+mv "/tmp/MCS/CastPilot.app" /Applications/ && \
+xattr -cr "/Applications/CastPilot.app" && \
 mkdir -p "$HOME/Library/Application Support/MidiCastSwitcher" && \
 CFG="$HOME/Library/Application Support/MidiCastSwitcher/config.json" && \
 [ -f "$CFG" ] || cp /tmp/MCS/config.json "$CFG" && \
 rm -rf /tmp/MCS /tmp/MCS.zip && \
-open "/Applications/Midi Cast Switcher.app"
+open "/Applications/CastPilot.app"
 ```
 
-> **Note:** This branch is marked as pre-release on GitHub, so `releases/latest` always resolves to the stable v1.6 on `main`. The script above uses the explicit tag `v1.9` to target this branch correctly.
+> **Note:** This branch is marked as pre-release on GitHub, so `releases/latest` always resolves to the stable v1.6 on `main`. The script above uses the explicit tag `v2.0` to target this branch correctly.
 
 > **Config location:** Since v1.9 the sandbox is off, so config lives at `~/Library/Application Support/MidiCastSwitcher/config.json`. Upgrading from an older sandboxed build automatically migrates the config out of the old container on first launch.
 
