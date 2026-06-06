@@ -424,10 +424,10 @@ class MidiController: ObservableObject {
                 DispatchQueue.main.async { self?.refreshDestinations() }
             }
         }
-        let status = MIDIClientCreateWithBlock("MidiCastSwitcherClient" as CFString, &midiClient, block)
+        let status = MIDIClientCreateWithBlock("CastPilotClient" as CFString, &midiClient, block)
         if status == noErr {
-            MIDISourceCreate(midiClient, "MidiCastSwitcher Source" as CFString, &virtualSource)
-            MIDIOutputPortCreate(midiClient, "MidiCastSwitcher Out" as CFString, &outputPort)
+            MIDISourceCreate(midiClient, "CastPilot Source" as CFString, &virtualSource)
+            MIDIOutputPortCreate(midiClient, "CastPilot Out" as CFString, &outputPort)
         }
     }
 
@@ -1190,7 +1190,7 @@ struct ConfigView: View {
                                 .buttonStyle(.plain).foregroundColor(.secondary)
                             }
                             Picker("", selection: $midi.config.midiOutputName) {
-                                Text("Virtual Source (MidiCastSwitcher)").tag("")
+                                Text("Virtual Source (CastPilot)").tag("")
                                 ForEach(midi.availableDestinations) { dest in
                                     Text(dest.name).tag(dest.name)
                                 }
