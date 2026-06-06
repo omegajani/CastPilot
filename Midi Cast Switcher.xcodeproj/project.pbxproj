@@ -263,7 +263,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.1;
+				MARKETING_VERSION = 2.1.1;
 				INFOPLIST_KEY_CFBundleDisplayName = CastPilot;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.janoslinde.Midi-Cast-Switcher";
 				PRODUCT_NAME = CastPilot;
@@ -297,7 +297,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.1;
+				MARKETING_VERSION = 2.1.1;
 				INFOPLIST_KEY_CFBundleDisplayName = CastPilot;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.janoslinde.Midi-Cast-Switcher";
 				PRODUCT_NAME = CastPilot;

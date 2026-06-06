@@ -586,14 +586,52 @@ class MidiController: ObservableObject {
         }
         print(trace.joined(separator: "\n"))
 
+        // Deliver via CoreMIDI timestamps instead of main-thread timers. CoreMIDI buffers the
+        // packets and delivers each at its exact timestamp in the driver — no main-thread jitter,
+        // no event pile-up. A single MIDISend/MIDIReceived hands off the whole sequence.
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        let base = mach_absolute_time()
+        let noteOffMs = 20   // short note-off, decoupled from delayMs so it never overlaps the next on
+        func ts(_ ms: Int) -> MIDITimeStamp {
+            let nanos = UInt64(ms) * 1_000_000
+            return base &+ (nanos &* UInt64(tb.numer) / UInt64(tb.denom))
+        }
+
+        // Collect (timestamp, bytes) for every event, then sort ascending (MIDIPacketListAdd
+        // requires non-decreasing timestamps).
+        var events: [(ts: MIDITimeStamp, bytes: [UInt8])] = []
         for entry in schedule {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(entry.delayMs) / 1000.0) {
-                self.send(command: entry.cmd)
+            events.append((ts(entry.delayMs), bytes(for: entry.cmd)))
+            if entry.cmd.type == .note {
+                let off: [UInt8] = [0x80 + UInt8(entry.cmd.channel - 1),
+                                    UInt8(entry.cmd.value1 & 0x7F), 0]
+                events.append((ts(entry.delayMs + noteOffMs), off))
+            }
+        }
+        events.sort { $0.ts < $1.ts }
+        guard !events.isEmpty else { return }
+
+        // The inline MIDIPacketList struct only fits ~1 packet; allocate a buffer big enough
+        // for the whole sequence.
+        let cap = events.count * 32 + 1024
+        var buffer = [UInt8](repeating: 0, count: cap)
+        buffer.withUnsafeMutableBytes { raw in
+            let listPtr = raw.baseAddress!.assumingMemoryBound(to: MIDIPacketList.self)
+            var pkt = MIDIPacketListInit(listPtr)
+            for e in events {
+                pkt = MIDIPacketListAdd(listPtr, raw.count, pkt, e.ts, e.bytes.count, e.bytes)
+            }
+            if let dest = selectedDestination {
+                MIDISend(outputPort, dest, listPtr)
+            } else {
+                MIDIReceived(virtualSource, listPtr)
             }
         }
     }
 
-    func send(command: MidiCommand) {
+    /// Builds the raw MIDI bytes for a command's "on" message (Note On / PC / CC).
+    func bytes(for command: MidiCommand) -> [UInt8] {
         let statusByte: UInt8
         switch command.type {
         case .note: statusByte = 0x90 + UInt8(command.channel - 1)
@@ -602,7 +640,12 @@ class MidiController: ObservableObject {
         }
         let b2 = UInt8(command.value1 & 0x7F)
         let b3 = UInt8(command.value2 & 0x7F)
-        let bytes: [UInt8] = command.type == .pc ? [statusByte, b2] : [statusByte, b2, b3]
+        return command.type == .pc ? [statusByte, b2] : [statusByte, b2, b3]
+    }
+
+    func send(command: MidiCommand) {
+        let bytes = self.bytes(for: command)
+        let b2 = UInt8(command.value1 & 0x7F)
 
         var packetList = MIDIPacketList()
         var packet = MIDIPacketListInit(&packetList)
