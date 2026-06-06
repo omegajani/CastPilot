@@ -310,6 +310,10 @@ class MidiController: ObservableObject {
     var virtualSource: MIDIEndpointRef = 0
     var outputPort: MIDIPortRef = 0
 
+    /// Dedicated high-priority queue that walks the MIDI schedule off the main thread, so
+    /// SwiftUI rendering can't jitter the timing. Serial → one sequence at a time.
+    private let scheduleQueue = DispatchQueue(label: "com.castpilot.midischedule", qos: .userInteractive)
+
     @Published var config: AppConfig = AppConfig()
     @Published var availableDestinations: [MIDIDestinationInfo] = []
     @Published var availableShows: [String] = []
@@ -586,46 +590,50 @@ class MidiController: ObservableObject {
         }
         print(trace.joined(separator: "\n"))
 
-        // Deliver via CoreMIDI timestamps instead of main-thread timers. CoreMIDI buffers the
-        // packets and delivers each at its exact timestamp in the driver — no main-thread jitter,
-        // no event pile-up. A single MIDISend/MIDIReceived hands off the whole sequence.
-        var tb = mach_timebase_info_data_t()
-        mach_timebase_info(&tb)
-        let base = mach_absolute_time()
+        // Deliver on a dedicated background thread, sending each packet immediately (timestamp 0
+        // = now) at its precise moment via mach_wait_until. We do NOT hand CoreMIDI future
+        // timestamps: the virtual source (MIDIReceived) ignores them and flushes the whole list
+        // at once. Walking the schedule off the main thread keeps SwiftUI rendering from
+        // jittering the timing — the reason events piled up before.
         let noteOffMs = 20   // short note-off, decoupled from delayMs so it never overlaps the next on
-        func ts(_ ms: Int) -> MIDITimeStamp {
-            let nanos = UInt64(ms) * 1_000_000
-            return base &+ (nanos &* UInt64(tb.numer) / UInt64(tb.denom))
-        }
 
-        // Collect (timestamp, bytes) for every event, then sort ascending (MIDIPacketListAdd
-        // requires non-decreasing timestamps).
-        var events: [(ts: MIDITimeStamp, bytes: [UInt8])] = []
+        // Flat (offsetMs, bytes) event list incl. note-offs, sorted by time.
+        var events: [(off: Int, bytes: [UInt8])] = []
         for entry in schedule {
-            events.append((ts(entry.delayMs), bytes(for: entry.cmd)))
+            events.append((entry.delayMs, bytes(for: entry.cmd)))
             if entry.cmd.type == .note {
-                let off: [UInt8] = [0x80 + UInt8(entry.cmd.channel - 1),
-                                    UInt8(entry.cmd.value1 & 0x7F), 0]
-                events.append((ts(entry.delayMs + noteOffMs), off))
+                events.append((entry.delayMs + noteOffMs,
+                               [0x80 + UInt8(entry.cmd.channel - 1), UInt8(entry.cmd.value1 & 0x7F), 0]))
             }
         }
-        events.sort { $0.ts < $1.ts }
+        events.sort { $0.off < $1.off }
         guard !events.isEmpty else { return }
 
-        // The inline MIDIPacketList struct only fits ~1 packet; allocate a buffer big enough
-        // for the whole sequence.
-        let cap = events.count * 32 + 1024
-        var buffer = [UInt8](repeating: 0, count: cap)
-        buffer.withUnsafeMutableBytes { raw in
-            let listPtr = raw.baseAddress!.assumingMemoryBound(to: MIDIPacketList.self)
-            var pkt = MIDIPacketListInit(listPtr)
-            for e in events {
-                pkt = MIDIPacketListAdd(listPtr, raw.count, pkt, e.ts, e.bytes.count, e.bytes)
+        // Resolve the destination ONCE here (on the main thread) and capture only primitives,
+        // so the background closure never touches @Published state.
+        let dest = selectedDestination
+        let out = outputPort
+        let vsrc = virtualSource
+
+        scheduleQueue.async {
+            var tb = mach_timebase_info_data_t()
+            mach_timebase_info(&tb)
+            let startTicks = mach_absolute_time()
+            // nanoseconds → mach ticks:  ticks = ns * denom / numer
+            func ticks(forMs ms: Int) -> UInt64 {
+                let ns = UInt64(ms) * 1_000_000
+                return startTicks &+ (ns &* UInt64(tb.denom) / UInt64(tb.numer))
             }
-            if let dest = selectedDestination {
-                MIDISend(outputPort, dest, listPtr)
-            } else {
-                MIDIReceived(virtualSource, listPtr)
+            for e in events {
+                mach_wait_until(ticks(forMs: e.off))
+                var pl = MIDIPacketList()
+                var p = MIDIPacketListInit(&pl)
+                p = MIDIPacketListAdd(&pl, 1024, p, 0, e.bytes.count, e.bytes)
+                if let dest = dest {
+                    MIDISend(out, dest, &pl)
+                } else {
+                    MIDIReceived(vsrc, &pl)
+                }
             }
         }
     }
