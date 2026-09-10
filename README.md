@@ -1,8 +1,10 @@
 # MCS — Midi Cast Switcher
 
+> **Heads-up:** This repo is now called **CastPilot** (formerly *Midi-Cast-Switcher*; old links redirect). The current app — **CastPilot v2.2** with the redesigned UI, ballet covers and in-app updates — lives on the [`feature/covers`](https://github.com/omegajani/CastPilot/tree/feature/covers) branch ([releases](https://github.com/omegajani/CastPilot/releases)). This `main` branch documents the older stable MCS v1.6.
+
 **Stable release · v1.6** · A compact macOS utility for live shows that automates Nuendo track version switching based on daily cast assignments.
 
-> Looking for ballet-cover / track-variant support? See the experimental [`feature/covers`](https://github.com/omegajani/Midi-Cast-Switcher/tree/feature/covers) branch. This `main` branch is the production-ready version without those features.
+> Looking for ballet-cover / track-variant support? See the experimental [`feature/covers`](https://github.com/omegajani/CastPilot/tree/feature/covers) branch. This `main` branch is the production-ready version without those features.
 
 ---
 
