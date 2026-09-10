@@ -305,6 +305,15 @@ struct MIDIDestinationInfo: Identifiable, Equatable {
     let name: String
 }
 
+/// Feedback for the live window's send button. `selection` snapshots the cast that was sent,
+/// so the UI can flag when the assignment changed afterwards.
+enum SendStatus: Equatable {
+    case idle
+    case sending(commands: Int)
+    case sent(at: Date, roles: Int, totalRoles: Int, selection: [UUID?])
+    case nothingToSend
+}
+
 class MidiController: ObservableObject {
     var midiClient: MIDIClientRef = 0
     var virtualSource: MIDIEndpointRef = 0
@@ -317,6 +326,7 @@ class MidiController: ObservableObject {
     @Published var config: AppConfig = AppConfig()
     @Published var availableDestinations: [MIDIDestinationInfo] = []
     @Published var availableShows: [String] = []
+    @Published var sendStatus: SendStatus = .idle
     let configURL: URL
     let showsDir: URL
 
@@ -523,6 +533,7 @@ class MidiController: ObservableObject {
         var schedule: [ScheduledCmd] = []
         var t = 0
         var trace: [String] = []
+        var rolesSent = 0
 
         for role in config.roles {
             guard let resolved = role.resolvePlaybackSource(allRoles: config.roles) else { continue }
@@ -572,6 +583,7 @@ class MidiController: ObservableObject {
             }
 
             // Extra pause between roles so Nuendo can settle before the next role's commands.
+            if roleHadCommands { rolesSent += 1 }
             if roleHadCommands && config.interRoleDelayMs > 0 {
                 t += config.interRoleDelayMs
                 trace.append("  ---- inter-role gap: \(config.interRoleDelayMs)ms ----")
@@ -607,13 +619,17 @@ class MidiController: ObservableObject {
             }
         }
         events.sort { $0.off < $1.off }
-        guard !events.isEmpty else { return }
+        guard !events.isEmpty else { sendStatus = .nothingToSend; return }
 
         // Resolve the destination ONCE here (on the main thread) and capture only primitives,
         // so the background closure never touches @Published state.
         let dest = selectedDestination
         let out = outputPort
         let vsrc = virtualSource
+        let sentRoles = rolesSent
+        let totalRoles = config.roles.count
+        let selection = config.roles.map(\.selectedMemberId)
+        sendStatus = .sending(commands: schedule.count)
 
         scheduleQueue.async {
             var tb = mach_timebase_info_data_t()
@@ -634,6 +650,10 @@ class MidiController: ObservableObject {
                 } else {
                     MIDIReceived(vsrc, &pl)
                 }
+            }
+            // Report completion only after the last packet went out — outside the timing loop.
+            DispatchQueue.main.async { [weak self] in
+                self?.sendStatus = .sent(at: Date(), roles: sentRoles, totalRoles: totalRoles, selection: selection)
             }
         }
     }
@@ -694,7 +714,7 @@ class UpdateChecker: ObservableObject {
     @Published var isInstalling = false
     @Published var installError: String? = nil
 
-    static let repoSlug = "omegajani/Midi-Cast-Switcher"
+    static let repoSlug = "omegajani/CastPilot"
 
     var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
@@ -858,20 +878,25 @@ struct MidiCastSwitcherApp: App {
                 .onAppear { setupLiveWindow() }
         }
         .windowResizability(.contentSize)
-        .defaultSize(width: 280, height: 380)
+        .defaultSize(width: 280, height: 470)
 
-        // Single config window — Window (not WindowGroup) ensures only one instance
-        Window("CastPilot Einstellungen", id: "config") {
-            ConfigView(midi: midi, emailClient: emailClient, updater: updater)
+        // Single show-editor window — Window (not WindowGroup) ensures only one instance
+        Window("CastPilot – Show bearbeiten", id: "config") {
+            ConfigView(midi: midi)
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 1000, height: 580)
+        .defaultSize(width: 1200, height: 680)
 
         // Email import window
-        Window("CastPilot Email Import", id: "email") {
+        Window("CastPilot – E-Mail-Import", id: "email") {
             EmailView(midi: midi, emailClient: emailClient)
         }
         .windowResizability(.contentSize)
+
+        // App-wide settings (⌘,): MIDI output & navigation, e-mail account, updates
+        Settings {
+            SettingsView(midi: midi, updater: updater)
+        }
     }
 
     private func setupLiveWindow() {
@@ -881,11 +906,111 @@ struct MidiCastSwitcherApp: App {
                     window.level = .floating
                     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
                     window.titlebarAppearsTransparent = true
+                    // The header already shows "CastPilot" + show name — don't repeat it in the title bar.
+                    window.titleVisibility = .hidden
                     window.isMovableByWindowBackground = true
                 }
             }
         }
     }
+}
+
+// MARK: - Shared UI Building Blocks
+
+/// One place for spacing, label width and type used across the editor and settings windows.
+enum UI {
+    static let pad: CGFloat = 12
+    static let labelWidth: CGFloat = 96
+    static let itemTitle = Font.system(size: 13, weight: .semibold)
+    static let coverTint = Color.orange
+    /// Plain integer formatter — no thousands separator (ports, milliseconds).
+    static let integer: NumberFormatter = {
+        let f = NumberFormatter()
+        f.usesGroupingSeparator = false
+        f.allowsFloats = false
+        return f
+    }()
+}
+
+/// Column / section title with uniform spacing, so headers line up across columns.
+struct SectionHeader: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.headline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, UI.pad)
+            .padding(.top, UI.pad)
+            .padding(.bottom, 6)
+    }
+}
+
+/// Label on the left (no colon), control on the right. Pass `labelWidth: nil` for a natural-width label.
+struct FieldRow<Content: View>: View {
+    let label: String
+    let labelWidth: CGFloat?
+    let content: Content
+
+    init(_ label: String, labelWidth: CGFloat? = UI.labelWidth, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.labelWidth = labelWidth
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: labelWidth, alignment: .leading)
+            content
+        }
+    }
+}
+
+/// macOS-style +/− bar under a list. "−" removes the selected row.
+struct AddRemoveBar: View {
+    let addHelp: String
+    let removeHelp: String
+    let canRemove: Bool
+    let onAdd: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button(action: onAdd) {
+                Image(systemName: "plus").frame(width: 22, height: 18)
+            }
+            .help(addHelp)
+            Button(action: onRemove) {
+                Image(systemName: "minus").frame(width: 22, height: 18)
+            }
+            .disabled(!canRemove)
+            .help(removeHelp)
+            Spacer()
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+    }
+}
+
+/// Small orange "Cover" tag, used wherever a cover is selected.
+struct CoverBadge: View {
+    var body: some View {
+        Text("Cover")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundColor(UI.coverTint)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(UI.coverTint.opacity(0.18)))
+    }
+}
+
+/// Ballett variants are marked with "↪" wherever members are listed (menus can't show italics).
+func memberDisplayName(_ member: CastMember) -> String {
+    member.coverVariantOf == nil ? member.name : "↪ \(member.name)"
 }
 
 // MARK: - Live View
@@ -896,53 +1021,15 @@ struct LiveView: View {
     @State private var fireScale: CGFloat = 1.0
     @Environment(\.openWindow) private var openWindow
 
+    private let nameW: CGFloat = 52
+
+    private var hasAssignment: Bool {
+        midi.config.roles.contains { $0.selectedMemberId != nil }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // Title bar row
-            HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("CastPilot")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.secondary)
-                    if !midi.config.showName.isEmpty {
-                        Text(midi.config.showName)
-                            .font(.system(size: 13, weight: .semibold))
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                // Quick import: fetch + apply immediately, then open email window
-                Button {
-                    let pw = keychainLoad(account: midi.config.emailConfig.username) ?? ""
-                    let keywords = midi.config.roles.map { $0.emailKeyword }
-                    Task {
-                        await emailClient.fetch(config: midi.config.emailConfig, password: pw, keywords: keywords)
-                        emailClient.buildPending(roles: midi.config.roles)
-                        emailClient.applyAssignments(to: &midi.config)
-                        midi.saveConfig()
-                        emailClient.openInSettings = false
-                        openWindow(id: "email")
-                    }
-                } label: {
-                    Image(systemName: "envelope.open.fill")
-                        .font(.system(size: 13))
-                        .foregroundColor(emailClient.isFetching ? .accentColor : .secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Besetzung sofort aus Email importieren")
-                Button {
-                    openWindow(id: "config")
-                } label: {
-                    Image(systemName: "gear")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Einstellungen öffnen")
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
+            header
 
             Divider()
 
@@ -950,75 +1037,7 @@ struct LiveView: View {
             ScrollView {
                 VStack(spacing: 4) {
                     ForEach($midi.config.roles) { $role in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 8) {
-                                Text(role.name)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                    .frame(width: 52, alignment: .leading)
-                                    .lineLimit(1)
-
-                                Picker("", selection: $role.selectedMemberId) {
-                                    Text("—").tag(UUID?.none)
-                                    // Only "real" principals — variants are hidden from the picker.
-                                    ForEach(role.members
-                                        .filter { $0.coverVariantOf == nil }
-                                        .sorted { $0.versionPosition < $1.versionPosition }) { member in
-                                        Text(member.name).tag(UUID?.some(member.id))
-                                    }
-                                    if !role.covers.isEmpty {
-                                        Divider()
-                                        ForEach(role.covers) { cover in
-                                            Text("\(cover.name) (C)").tag(UUID?.some(cover.id))
-                                        }
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .labelsHidden()
-                                .frame(maxWidth: .infinity)
-                            }
-
-                            // Sub-label when a cover is selected: show the resolved playback source,
-                            // preferring the variant name ("Sofia & Ballett") if one exists.
-                            if let selId = role.selectedMemberId,
-                               role.covers.contains(where: { $0.id == selId }),
-                               let resolved = role.resolvePlaybackSource(allRoles: midi.config.roles) {
-                                let displayName: String = {
-                                    if let variant = role.members.first(where: { $0.coverVariantOf == resolved.member.id }) {
-                                        return variant.name
-                                    }
-                                    return resolved.member.name
-                                }()
-                                HStack(spacing: 4) {
-                                    Spacer().frame(width: 52)
-                                    Text("↳ via \(displayName)")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.secondary)
-                                    if resolved.ambiguous {
-                                        Image(systemName: "exclamationmark.triangle.fill")
-                                            .font(.system(size: 9))
-                                            .foregroundColor(.orange)
-                                            .help("Mehrere Principals abwesend — prüfen")
-                                    }
-                                }
-                            }
-                            // Sub-label when the borrowed role is cut: show which role's lines are included.
-                            if role.borrowedRoleIsCut(allRoles: midi.config.roles),
-                               let borrowedId = role.borrowsLinesFromRoleId,
-                               let borrowedRole = midi.config.roles.first(where: { $0.id == borrowedId }) {
-                                HStack(spacing: 4) {
-                                    Spacer().frame(width: 52)
-                                    Text("⊕ \(borrowedRole.name)")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(rowBackground(for: role))
-                        .cornerRadius(7)
-                        .padding(.horizontal, 8)
+                        roleRow($role)
                     }
                 }
                 .padding(.vertical, 8)
@@ -1026,18 +1045,196 @@ struct LiveView: View {
 
             Divider()
 
-            // Send to Nuendo button
-            Button(action: {
-                withAnimation(.spring(response: 0.18, dampingFraction: 0.6)) { fireScale = 0.95 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    withAnimation(.spring(response: 0.2, dampingFraction: 0.5)) { fireScale = 1.0 }
+            sendArea
+        }
+        .frame(minWidth: 240, idealWidth: 280, maxWidth: 400)
+        .onChange(of: midi.config) { midi.saveConfig() }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("CastPilot")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.secondary)
+                if !midi.config.showName.isEmpty {
+                    Text(midi.config.showName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
                 }
-                midi.fireMidi()
-            }) {
+            }
+            Spacer()
+            // Quick import: fetch + apply immediately, then open email window
+            Button(action: quickImport) {
+                if emailClient.isFetching {
+                    ProgressView().controlSize(.small).frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: "envelope.open")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(emailClient.isFetching)
+            .help("Besetzung sofort aus E-Mail importieren")
+            Button {
+                openWindow(id: "config")
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Show bearbeiten")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+
+    private func quickImport() {
+        let pw = keychainLoad(account: midi.config.emailConfig.username) ?? ""
+        let keywords = midi.config.roles.map { $0.emailKeyword }
+        Task {
+            await emailClient.fetch(config: midi.config.emailConfig, password: pw, keywords: keywords)
+            emailClient.buildPending(roles: midi.config.roles)
+            emailClient.applyAssignments(to: &midi.config)
+            midi.saveConfig()
+            emailClient.openInSettings = false
+            openWindow(id: "email")
+        }
+    }
+
+    // MARK: Role rows
+
+    @ViewBuilder
+    private func roleRow(_ role: Binding<Role>) -> some View {
+        let r = role.wrappedValue
+        let coverSelected = r.selectedMemberId.map { id in r.covers.contains { $0.id == id } } ?? false
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text(r.name)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .frame(width: nameW, alignment: .leading)
+                    .lineLimit(1)
+                castMenu(role)
+            }
+
+            // Sub-label when a cover is selected: show the resolved playback source,
+            // preferring the variant name ("Sofia & Ballett") if one exists.
+            if coverSelected {
+                if let resolved = r.resolvePlaybackSource(allRoles: midi.config.roles) {
+                    let displayName = r.members.first(where: { $0.coverVariantOf == resolved.member.id })?.name
+                        ?? resolved.member.name
+                    subLine {
+                        CoverBadge()
+                        Text("via \(displayName)")
+                        if resolved.ambiguous {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                                .help("Mehrere Darsteller abwesend — prüfen")
+                        }
+                    }
+                } else {
+                    subLine {
+                        CoverBadge()
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        Text("Kein freies Playback — wird übersprungen")
+                    }
+                }
+            }
+            // Sub-label when the borrowed role is cut: show which role's lines are included.
+            if r.borrowedRoleIsCut(allRoles: midi.config.roles),
+               let borrowedId = r.borrowsLinesFromRoleId,
+               let borrowedRole = midi.config.roles.first(where: { $0.id == borrowedId }) {
+                subLine { Text("⊕ \(borrowedRole.name)") }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 7).fill(rowTint(selected: r.selectedMemberId != nil, cover: coverSelected)))
+        .padding(.horizontal, 8)
+    }
+
+    /// Full-width cast menu. A Menu with our own label (instead of a bare Picker) keeps every row
+    /// the same width, independent of the longest name in each role.
+    private func castMenu(_ role: Binding<Role>) -> some View {
+        let r = role.wrappedValue
+        // Only "real" principals — variants are hidden from the picker.
+        let principals = r.members
+            .filter { $0.coverVariantOf == nil }
+            .sorted { $0.versionPosition < $1.versionPosition }
+        let title: String = {
+            guard let id = r.selectedMemberId else { return "—" }
+            return r.members.first(where: { $0.id == id })?.name
+                ?? r.covers.first(where: { $0.id == id })?.name
+                ?? "—"
+        }()
+        return Menu {
+            Picker("", selection: role.selectedMemberId) {
+                Text("—").tag(UUID?.none)
+                ForEach(principals) { member in
+                    Text(member.name).tag(UUID?.some(member.id))
+                }
+                if !r.covers.isEmpty {
+                    Section("Cover") {
+                        ForEach(r.covers) { cover in
+                            Text(cover.name).tag(UUID?.some(cover.id))
+                        }
+                    }
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.system(size: 12))
+                    .foregroundColor(r.selectedMemberId == nil ? .secondary : .primary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.12)))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func subLine<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 4) { content() }
+            .font(.system(size: 10))
+            .foregroundColor(.secondary)
+            .padding(.leading, nameW + 8)
+    }
+
+    private func rowTint(selected: Bool, cover: Bool) -> Color {
+        if cover { return UI.coverTint.opacity(0.14) }
+        return selected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.07)
+    }
+
+    // MARK: Send
+
+    private var sendArea: some View {
+        VStack(spacing: 6) {
+            Button(action: send) {
                 HStack(spacing: 8) {
                     Image(systemName: "waveform.path")
                         .font(.system(size: 14, weight: .semibold))
-                    Text("Send to Nuendo")
+                    Text("An Nuendo senden")
                         .font(.system(size: 15, weight: .semibold))
                 }
                 .foregroundColor(.white)
@@ -1045,359 +1242,209 @@ struct LiveView: View {
                 .padding(.vertical, 11)
                 .background(Color.accentColor)
                 .cornerRadius(8)
+                .opacity(hasAssignment ? 1 : 0.4)
             }
             .buttonStyle(.plain)
             .scaleEffect(fireScale)
-            .padding(10)
+            .disabled(!hasAssignment)
+            .keyboardShortcut(.return, modifiers: .command)
+            .help("Besetzung an Nuendo senden (⌘↩)")
+
+            sendStatusLine
         }
-        .frame(minWidth: 240, idealWidth: 280, maxWidth: 400)
-        .onChange(of: midi.config) { midi.saveConfig() }
+        .padding(10)
     }
 
-    private func rowBackground(for role: Role) -> Color {
-        role.selectedMemberId == nil
-            ? Color.secondary.opacity(0.07)
-            : Color.accentColor.opacity(0.12)
+    private func send() {
+        withAnimation(.spring(response: 0.18, dampingFraction: 0.6)) { fireScale = 0.95 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.5)) { fireScale = 1.0 }
+        }
+        midi.fireMidi()
+    }
+
+    @ViewBuilder
+    private var sendStatusLine: some View {
+        switch midi.sendStatus {
+        case .idle:
+            statusText(hasAssignment ? "Bereit · ⌘↩" : "Noch keine Rolle besetzt")
+        case .sending(let count):
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                statusText("Sende \(count) MIDI-Befehle …")
+            }
+        case .sent(let date, let roles, let total, let selection):
+            // A stale "sent" is dangerous during a show — flag any change to the cast since.
+            if selection == midi.config.roles.map(\.selectedMemberId) {
+                statusText("Gesendet \(date.formatted(date: .omitted, time: .shortened)) · \(roles)/\(total) Rollen",
+                           icon: "checkmark.circle.fill", tint: .green)
+            } else {
+                statusText("Besetzung geändert — noch nicht gesendet",
+                           icon: "exclamationmark.circle.fill", tint: .orange)
+            }
+        case .nothingToSend:
+            statusText("Nichts gesendet — keine passenden Slots",
+                       icon: "exclamationmark.triangle.fill", tint: .orange)
+        }
+    }
+
+    private func statusText(_ text: String, icon: String? = nil, tint: Color = .secondary) -> some View {
+        HStack(spacing: 4) {
+            if let icon { Image(systemName: icon).foregroundColor(tint) }
+            Text(text).foregroundColor(.secondary)
+        }
+        .font(.system(size: 11))
+        .lineLimit(1)
     }
 }
 
-// MARK: - Config View
+// MARK: - Show Editor
 
 struct ConfigView: View {
     @ObservedObject var midi: MidiController
-    @ObservedObject var emailClient: IMAPClient
-    @ObservedObject var updater: UpdateChecker
     @State private var selectedRoleId: UUID? = nil
-    @State private var emailPassword = ""
-    @State private var copyConfirmed = false
-    @State private var showInstallConfirm = false
     @State private var confirmDeleteShow = false
-
-    private let leftW: CGFloat  = 360
-    private let minH:  CGFloat = 580
+    @State private var roleToDelete: UUID? = nil
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Left panel: role list + global navigation settings
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    // Show section — named full-config snapshots
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Show")
-                            .font(.headline)
-
-                        HStack(spacing: 4) {
-                            Text("Name:").font(.caption).foregroundColor(.secondary)
-                            TextField("Show-Name", text: $midi.config.showName)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-
-                        HStack(spacing: 4) {
-                            Text("Laden:").font(.caption).foregroundColor(.secondary)
-                            Picker("", selection: Binding<String>(
-                                get: { midi.availableShows.contains(midi.config.showName) ? midi.config.showName : "" },
-                                set: { newValue in if !newValue.isEmpty { midi.loadShow(named: newValue) } }
-                            )) {
-                                Text("—").tag("")
-                                ForEach(midi.availableShows, id: \.self) { Text($0).tag($0) }
-                            }
-                            .labelsHidden()
-                        }
-
-                        HStack(spacing: 6) {
-                            Button("Speichern") { midi.saveShow() }
-                                .buttonStyle(.borderedProminent).controlSize(.small)
-                            Button("Exportieren…") { exportShow() }
-                                .buttonStyle(.bordered).controlSize(.small)
-                            Button("Importieren…") { importShow() }
-                                .buttonStyle(.bordered).controlSize(.small)
-                        }
-                        HStack(spacing: 6) {
-                            Button("Löschen", role: .destructive) { confirmDeleteShow = true }
-                                .buttonStyle(.bordered).controlSize(.small)
-                                .disabled(!midi.availableShows.contains(midi.config.showName))
-                                .confirmationDialog("Show löschen: \(midi.config.showName)?",
-                                                    isPresented: $confirmDeleteShow) {
-                                    Button("Löschen", role: .destructive) { midi.deleteShow(named: midi.config.showName) }
-                                    Button("Abbrechen", role: .cancel) { }
-                                }
-                        }
-                    }
-                    .padding([.horizontal, .top], 14)
-                    .padding(.bottom, 10)
-                    .onAppear { midi.refreshShows() }
-
-                    Divider()
-
-                    Text("Rollen")
-                        .font(.headline)
-                        .padding([.horizontal, .top], 14)
-                        .padding(.bottom, 6)
-
-                    List(selection: $selectedRoleId) {
-                        ForEach($midi.config.roles) { $role in
-                            VStack(alignment: .leading, spacing: 3) {
-                                TextField("Rollen Name", text: $role.name)
-                                    .font(.system(size: 13, weight: .semibold))
-                                HStack(spacing: 4) {
-                                    Text("Keyword:")
-                                        .font(.caption2).foregroundColor(.secondary)
-                                    TextField("z.B. AURORA", text: $role.emailKeyword)
-                                        .font(.caption).foregroundColor(.secondary)
-                                }
-                            }
-                            .tag(role.id)
-                            .padding(.vertical, 2)
-                        }
-                        .onDelete { midi.config.roles.remove(atOffsets: $0) }
-                    }
-                    .frame(height: max(100, CGFloat(midi.config.roles.count) * 34 + 8))
-
-                    HStack {
-                        Button("+ Rolle") {
-                            let r = Role()
-                            midi.config.roles.append(r)
-                            selectedRoleId = r.id
-                        }
-                        .buttonStyle(.bordered)
-                        Button("Löschen") {
-                            if let id = selectedRoleId {
-                                midi.config.roles.removeAll { $0.id == id }
-                                selectedRoleId = nil
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(selectedRoleId == nil)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 10)
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Nuendo Navigation")
-                            .font(.headline)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text("MIDI Ausgang:")
-                                    .font(.caption).foregroundColor(.secondary)
-                                Spacer()
-                                Button { midi.refreshDestinations() } label: {
-                                    Image(systemName: "arrow.clockwise").font(.caption)
-                                }
-                                .buttonStyle(.plain).foregroundColor(.secondary)
-                            }
-                            Picker("", selection: $midi.config.midiOutputName) {
-                                Text("Virtual Source (CastPilot)").tag("")
-                                ForEach(midi.availableDestinations) { dest in
-                                    Text(dest.name).tag(dest.name)
-                                }
-                            }
-                            .labelsHidden()
-                        }
-
-                        HStack {
-                            Text("Verzögerung:")
-                                .font(.caption).foregroundColor(.secondary)
-                            TextField("ms", value: $midi.config.delayMs, formatter: NumberFormatter())
-                                .frame(width: 54)
-                                .textFieldStyle(.roundedBorder)
-                            Text("ms").font(.caption).foregroundColor(.secondary)
-                                .help("Pause zwischen einzelnen MIDI-Commands")
-                        }
-
-                        HStack {
-                            Text("Pause zw. Rollen:")
-                                .font(.caption).foregroundColor(.secondary)
-                            TextField("ms", value: $midi.config.interRoleDelayMs, formatter: NumberFormatter())
-                                .frame(width: 54)
-                                .textFieldStyle(.roundedBorder)
-                            Text("ms").font(.caption).foregroundColor(.secondary)
-                                .help("Zusätzliche Pause zwischen Command-Blöcken verschiedener Rollen, damit Nuendo bei Multi-Role-Sends nicht überlastet wird.")
-                        }
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("↑ Vorherige Track Version")
-                                .font(.caption).foregroundColor(.secondary)
-                            MidiCommandRow(cmd: $midi.config.prevVersionCommand)
-                        }
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("↓ Nächste Track Version")
-                                .font(.caption).foregroundColor(.secondary)
-                            MidiCommandRow(cmd: $midi.config.nextVersionCommand)
-                        }
-                    }
-                    .padding(14)
-
-                    Divider()
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            ZStack(alignment: .bottomTrailing) {
-                                Image(systemName: "envelope").font(.system(size: 12))
-                                Image(systemName: "gearshape.fill").font(.system(size: 6)).offset(x: 4, y: 3)
-                            }
-                            Text("Email Import").font(.headline)
-                        }
-
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Server").font(.caption).foregroundColor(.secondary)
-                                TextField("imap.gmx.de", text: $midi.config.emailConfig.imapServer)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Port").font(.caption).foregroundColor(.secondary)
-                                TextField("993", value: $midi.config.emailConfig.imapPort, formatter: NumberFormatter())
-                                    .textFieldStyle(.roundedBorder).frame(width: 60)
-                            }
-                        }
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Benutzername").font(.caption).foregroundColor(.secondary)
-                            TextField("name@gmx.de", text: $midi.config.emailConfig.username)
-                                .textFieldStyle(.roundedBorder)
-                        }
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Passwort").font(.caption).foregroundColor(.secondary)
-                            SecureField("Passwort", text: $emailPassword)
-                                .textFieldStyle(.roundedBorder)
-                        }
-
-                        HStack {
-                            Spacer()
-                            Button("Speichern") {
-                                keychainSave(account: midi.config.emailConfig.username, secret: emailPassword)
-                                midi.saveConfig()
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                    }
-                    .padding(14)
-                    .onAppear { emailPassword = keychainLoad(account: midi.config.emailConfig.username) ?? "" }
-
-                    Divider()
-
-                    // Update section
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.down.circle").font(.system(size: 12))
-                            Text("Update").font(.headline)
-                        }
-
-                        HStack(spacing: 8) {
-                            Text("Aktuelle Version:")
-                                .font(.caption).foregroundColor(.secondary)
-                            Text(updater.currentVersion)
-                                .font(.caption).foregroundColor(.primary)
-                            Spacer()
-                            Button {
-                                Task { await updater.check() }
-                            } label: {
-                                if updater.isChecking {
-                                    ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
-                                } else {
-                                    Text("Auf Update prüfen")
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(updater.isChecking)
-                        }
-
-                        if let err = updater.lastError {
-                            Text(err).font(.caption2).foregroundColor(.red)
-                        } else if let latest = updater.latestVersion {
-                            if updater.updateAvailable {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "arrow.up.circle.fill")
-                                        .foregroundColor(.accentColor)
-                                    Text("Version \(latest) verfügbar")
-                                        .font(.caption).foregroundColor(.accentColor)
-                                }
-
-                                if updater.isInstalling {
-                                    HStack(spacing: 8) {
-                                        ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
-                                        Text("Lade herunter & installiere…")
-                                            .font(.caption).foregroundColor(.secondary)
-                                    }
-                                } else {
-                                    Button {
-                                        showInstallConfirm = true
-                                    } label: {
-                                        Label("Jetzt aktualisieren", systemImage: "arrow.down.circle.fill")
-                                    }
-                                    .buttonStyle(.borderedProminent).controlSize(.small)
-                                    .confirmationDialog("Version \(latest) installieren?",
-                                                        isPresented: $showInstallConfirm) {
-                                        Button("Installieren & neu starten") {
-                                            Task { await updater.downloadAndInstall() }
-                                        }
-                                        Button("Abbrechen", role: .cancel) { }
-                                    } message: {
-                                        Text("CastPilot lädt die neue Version herunter, ersetzt sich selbst und startet neu. Die Konfiguration bleibt erhalten.")
-                                    }
-
-                                    Button("Auf GitHub öffnen") {
-                                        NSWorkspace.shared.open(updater.releasePageURL)
-                                    }
-                                    .buttonStyle(.borderless).controlSize(.small)
-                                }
-
-                                // Fallback: if the in-app install failed, surface the error and
-                                // the old copy-to-Terminal command as a manual escape hatch.
-                                if let ierr = updater.installError {
-                                    Text("Automatisches Update fehlgeschlagen: \(ierr)")
-                                        .font(.caption2).foregroundColor(.red)
-                                    Button {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(UpdateChecker.updateCommand, forType: .string)
-                                        copyConfirmed = true
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copyConfirmed = false }
-                                    } label: {
-                                        Label(copyConfirmed ? "Kopiert!" : "Befehl kopieren (Fallback)",
-                                              systemImage: copyConfirmed ? "checkmark" : "doc.on.doc")
-                                    }
-                                    .buttonStyle(.bordered).controlSize(.small)
-                                }
-                            } else {
-                                Text("Du hast die neueste Version.")
-                                    .font(.caption).foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                    .padding(14)
-                }
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 360)
+        } detail: {
+            if let idx = midi.config.roles.firstIndex(where: { $0.id == selectedRoleId }) {
+                RoleDetailView(role: $midi.config.roles[idx], allRoles: midi.config.roles)
+                    .id(selectedRoleId)   // fresh list selections per role
+            } else {
+                ContentUnavailableView("Keine Rolle ausgewählt",
+                                       systemImage: "person.2",
+                                       description: Text("Wähle links eine Rolle aus."))
             }
-            .frame(width: leftW)
-            .frame(maxHeight: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                SettingsLink {
+                    Label("Einstellungen", systemImage: "gearshape")
+                }
+                .help("Einstellungen öffnen (⌘,)")
+            }
+        }
+        .frame(minWidth: 1080, minHeight: 580)
+        .onAppear {
+            midi.refreshShows()
+            if selectedRoleId == nil { selectedRoleId = midi.config.roles.first?.id }
+        }
+        .onChange(of: midi.config) { midi.saveConfig() }
+        .confirmationDialog("Rolle löschen?",
+                            isPresented: Binding(get: { roleToDelete != nil },
+                                                 set: { if !$0 { roleToDelete = nil } }),
+                            presenting: roleToDelete) { id in
+            Button("Löschen", role: .destructive) { deleteRole(id) }
+            Button("Abbrechen", role: .cancel) { }
+        } message: { id in
+            let name = midi.config.roles.first(where: { $0.id == id })?.name ?? ""
+            Text("„\(name)“ wird mit allen Tracks, Darstellern und Covers entfernt.")
+        }
+    }
+
+    // MARK: Sidebar
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            showSection
 
             Divider()
 
-            // Right panel: role detail
-            Group {
-                if let idx = midi.config.roles.firstIndex(where: { $0.id == selectedRoleId }) {
-                    RoleDetailView(role: $midi.config.roles[idx], allRoles: midi.config.roles)
-                } else {
-                    VStack(spacing: 10) {
-                        Image(systemName: "arrow.left")
-                            .font(.largeTitle)
-                            .foregroundColor(.secondary.opacity(0.3))
-                        Text("Rolle links auswählen")
+            SectionHeader(title: "Rollen")
+            List(selection: $selectedRoleId) {
+                ForEach(midi.config.roles) { role in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(role.name.isEmpty ? "Unbenannte Rolle" : role.name)
+                            .font(UI.itemTitle)
+                            .foregroundColor(.primary)
+                        Text(role.emailKeyword.isEmpty ? "Kein Stichwort" : role.emailKeyword)
+                            .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.vertical, 2)
+                    .tag(role.id)
+                    .contextMenu {
+                        Button("Rolle löschen …", role: .destructive) { roleToDelete = role.id }
+                    }
+                }
+                .onDelete { offsets in
+                    roleToDelete = offsets.first.map { midi.config.roles[$0].id }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .listStyle(.sidebar)
+
+            Divider()
+            AddRemoveBar(addHelp: "Rolle hinzufügen",
+                         removeHelp: "Ausgewählte Rolle löschen",
+                         canRemove: selectedRoleId != nil,
+                         onAdd: addRole,
+                         onRemove: { roleToDelete = selectedRoleId })
         }
-        .frame(minWidth: 1000, minHeight: minH, maxHeight: .infinity)
-        .onChange(of: midi.config) { midi.saveConfig() }
+    }
+
+    // Show section — named full-config snapshots
+    private var showSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Show")
+                .font(.headline)
+
+            FieldRow("Name") {
+                TextField("Show-Name", text: $midi.config.showName)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            FieldRow("Show laden") {
+                Picker("", selection: Binding<String>(
+                    get: { midi.availableShows.contains(midi.config.showName) ? midi.config.showName : "" },
+                    set: { newValue in if !newValue.isEmpty { midi.loadShow(named: newValue) } }
+                )) {
+                    Text("—").tag("")
+                    ForEach(midi.availableShows, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+            }
+
+            HStack(spacing: 6) {
+                Button("Als Show sichern") { midi.saveShow() }
+                    .buttonStyle(.borderedProminent)
+                    .help("Legt die aktuelle Konfiguration unter diesem Namen in der Show-Bibliothek ab. Laufende Änderungen werden ohnehin automatisch gesichert.")
+                Menu {
+                    Button("Exportieren …") { exportShow() }
+                    Button("Importieren …") { importShow() }
+                    Divider()
+                    Button("Show löschen …", role: .destructive) { confirmDeleteShow = true }
+                        .disabled(!midi.availableShows.contains(midi.config.showName))
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Exportieren, Importieren, Löschen")
+                Spacer()
+            }
+            .controlSize(.small)
+        }
+        .padding(UI.pad)
+        .confirmationDialog("Show „\(midi.config.showName)“ löschen?", isPresented: $confirmDeleteShow) {
+            Button("Löschen", role: .destructive) { midi.deleteShow(named: midi.config.showName) }
+            Button("Abbrechen", role: .cancel) { }
+        }
+    }
+
+    private func addRole() {
+        let r = Role()
+        midi.config.roles.append(r)
+        selectedRoleId = r.id
+    }
+
+    private func deleteRole(_ id: UUID) {
+        if selectedRoleId == id { selectedRoleId = nil }
+        midi.config.roles.removeAll { $0.id == id }
     }
 
     // MARK: - Show export / import (free files via Finder)
@@ -1429,10 +1476,21 @@ struct ConfigView: View {
 struct RoleDetailView: View {
     @Binding var role: Role
     var allRoles: [Role] = []
+    @State private var selectedTrackId: UUID? = nil
     @State private var selectedMemberId: UUID? = nil
+    @State private var selectedCoverId: UUID? = nil
 
-    private let trackW: CGFloat  = 380
-    private let memberMinW: CGFloat = 260
+    private let trackW: CGFloat = 480
+    private let memberMinW: CGFloat = 280
+
+    private var sortedMembers: [CastMember] {
+        role.members.sorted { $0.versionPosition < $1.versionPosition }
+    }
+
+    /// Real principals only — variants are never a playback source or link target.
+    private var principals: [CastMember] {
+        sortedMembers.filter { $0.coverVariantOf == nil }
+    }
 
     private func nextFreePosition() -> Int {
         let used = Set(role.members.map { $0.versionPosition })
@@ -1441,29 +1499,141 @@ struct RoleDetailView: View {
         return pos
     }
 
-    private func setPosition(for memberId: UUID, to newPos: Int) {
-        guard let idx = role.members.firstIndex(where: { $0.id == memberId }) else { return }
-        let oldPos = role.members[idx].versionPosition
-        if let conflictIdx = role.members.firstIndex(where: {
-            $0.versionPosition == newPos && $0.id != memberId
-        }) {
-            role.members[conflictIdx].versionPosition = oldPos
-        }
-        role.members[idx].versionPosition = newPos
+    /// Id-based binding, so a row never writes into the wrong member after the array changed.
+    private func memberBinding(_ id: UUID) -> Binding<CastMember> {
+        Binding(
+            get: { role.members.first(where: { $0.id == id }) ?? CastMember(id: id) },
+            set: { newValue in
+                if let i = role.members.firstIndex(where: { $0.id == id }) { role.members[i] = newValue }
+            }
+        )
     }
 
-    /// One row per slot in a track: shows "Slot N: [member dropdown]".
-    /// Dropdown options are "—" (empty) plus all members of the role.
+    var body: some View {
+        VStack(spacing: 0) {
+            roleHeader
+
+            Divider()
+
+            HStack(spacing: 0) {
+                tracksColumn
+                    .frame(width: trackW)
+                    .frame(maxHeight: .infinity)
+
+                Divider()
+
+                peopleColumn
+                    .frame(minWidth: memberMinW, maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    // MARK: Role header
+
+    private var roleHeader: some View {
+        HStack(spacing: 20) {
+            TextField("Rollenname", text: $role.name)
+                .textFieldStyle(.plain)
+                .font(.title2.weight(.semibold))
+                .frame(minWidth: 120, maxWidth: 220)
+
+            FieldRow("Stichwort", labelWidth: nil) {
+                TextField("z. B. AURORA", text: $role.emailKeyword)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 130)
+            }
+            .help("Rollenname, wie er in der Besetzungs-E-Mail steht")
+
+            // When the linked role is "cut", this role uses the Ballett variants (combined playback).
+            FieldRow("Singt auch für", labelWidth: nil) {
+                Picker("", selection: Binding<String>(
+                    get: { role.borrowsLinesFromRoleId?.uuidString ?? "" },
+                    set: { newValue in
+                        role.borrowsLinesFromRoleId = newValue.isEmpty ? nil : UUID(uuidString: newValue)
+                    }
+                )) {
+                    Text("—").tag("")
+                    ForEach(allRoles.filter { $0.id != role.id }) { r in
+                        Text(r.name).tag(r.id.uuidString)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150, alignment: .leading)
+            }
+            .help("Ist die gewählte Rolle heute „cut“, nutzt diese Rolle die Ballett-Varianten mit dem kombinierten Playback.")
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, UI.pad)
+        .padding(.vertical, 10)
+    }
+
+    // MARK: Tracks
+
+    private var tracksColumn: some View {
+        VStack(spacing: 0) {
+            SectionHeader(title: "Tracks")
+
+            List(selection: $selectedTrackId) {
+                ForEach($role.tracks) { $track in
+                    trackCard($track)
+                        .tag(track.id)
+                        .contextMenu {
+                            Button("Track löschen", role: .destructive) { removeTrack(track.id) }
+                        }
+                }
+                .onDelete { role.tracks.remove(atOffsets: $0) }
+            }
+
+            Divider()
+            AddRemoveBar(addHelp: "Track hinzufügen",
+                         removeHelp: "Ausgewählten Track löschen",
+                         canRemove: selectedTrackId != nil,
+                         onAdd: addTrack,
+                         onRemove: { if let id = selectedTrackId { removeTrack(id) } })
+        }
+    }
+
+    private func trackCard(_ track: Binding<NuendoTrack>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Track-Name", text: track.name)
+                .font(UI.itemTitle)
+
+            FieldRow("Slots") {
+                Stepper(value: Binding(
+                    get: { track.wrappedValue.versionCount },
+                    set: { newValue in
+                        var t = track.wrappedValue
+                        t.versionCount = newValue
+                        t.syncSlotAssignmentsToVersionCount()
+                        track.wrappedValue = t
+                    }
+                ), in: 1...32) {
+                    Text("\(track.wrappedValue.versionCount)")
+                        .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                        .frame(minWidth: 18, alignment: .leading)
+                }
+                .fixedSize()
+                .help("Anzahl der Track-Versionen in Nuendo")
+            }
+
+            FieldRow("Auswahl-Befehl") {
+                MidiCommandRow(cmd: track.selectCommand)
+            }
+
+            ForEach(1...max(1, track.wrappedValue.versionCount), id: \.self) { slot in
+                slotAssignmentRow(track: track, slot: slot)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    /// One row per slot in a track: "Slot N  [member dropdown]".
     /// Picking a member moves them to this slot and clears them from any other slot in this track.
-    @ViewBuilder
     private func slotAssignmentRow(track: Binding<NuendoTrack>, slot: Int) -> some View {
         let idx = slot - 1
         let currentId: String? = (idx < track.wrappedValue.slotAssignments.count) ? track.wrappedValue.slotAssignments[idx] : nil
-        HStack(spacing: 6) {
-            Text("Slot \(slot)")
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundColor(.secondary)
-                .frame(width: 42, alignment: .leading)
+        return FieldRow("Slot \(slot)") {
             Picker("", selection: Binding<String>(
                 get: { currentId ?? "" },
                 set: { newValue in
@@ -1472,254 +1642,183 @@ struct RoleDetailView: View {
                 }
             )) {
                 Text("—").tag("")
-                ForEach(role.members.sorted { $0.versionPosition < $1.versionPosition }) { member in
-                    Text(member.name).tag(member.id.uuidString)
+                ForEach(sortedMembers) { member in
+                    Text(memberDisplayName(member)).tag(member.id.uuidString)
                 }
             }
             .labelsHidden()
-            .frame(maxWidth: .infinity)
+            .frame(width: 200, alignment: .leading)
         }
     }
 
-    var body: some View {
-        HStack(spacing: 0) {
-            // Tracks column
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Nuendo-Kanäle")
-                    .font(.headline)
-                    .padding([.horizontal, .top], 12)
-                    .padding(.bottom, 6)
+    private func addTrack() {
+        let t = NuendoTrack(name: "Neuer Track")
+        role.tracks.append(t)
+        selectedTrackId = t.id
+    }
 
-                List {
-                    ForEach($role.tracks) { $track in
-                        VStack(alignment: .leading, spacing: 6) {
-                            TextField("Kanal Name", text: $track.name)
-                                .font(.system(size: 13, weight: .semibold))
+    private func removeTrack(_ id: UUID) {
+        if selectedTrackId == id { selectedTrackId = nil }
+        role.tracks.removeAll { $0.id == id }
+    }
 
-                            HStack(spacing: 6) {
-                                Text("Versionen:")
-                                    .font(.caption).foregroundColor(.secondary)
-                                Button {
-                                    if $track.wrappedValue.versionCount > 1 {
-                                        $track.wrappedValue.versionCount -= 1
-                                        $track.wrappedValue.syncSlotAssignmentsToVersionCount()
-                                    }
-                                } label: {
-                                    Image(systemName: "minus.circle")
-                                        .font(.system(size: 14))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(track.versionCount <= 1)
-                                Text("\(track.versionCount)")
-                                    .frame(width: 22, alignment: .center)
-                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                Button {
-                                    if $track.wrappedValue.versionCount < 32 {
-                                        $track.wrappedValue.versionCount += 1
-                                        $track.wrappedValue.syncSlotAssignmentsToVersionCount()
-                                    }
-                                } label: {
-                                    Image(systemName: "plus.circle")
-                                        .font(.system(size: 14))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(track.versionCount >= 32)
-                            }
+    // MARK: Members & covers
 
-                            Text("Auswahl-Befehl:")
-                                .font(.caption).foregroundColor(.secondary)
-                            MidiCommandRow(cmd: $track.selectCommand)
+    private var peopleColumn: some View {
+        VStack(spacing: 0) {
+            SectionHeader(title: "Darsteller")
 
-                            Divider().padding(.vertical, 2)
-                            Text("Slots in diesem Kanal:")
-                                .font(.caption).foregroundColor(.secondary)
-                            ForEach(1...max(1, track.versionCount), id: \.self) { slot in
-                                slotAssignmentRow(track: $track, slot: slot)
-                            }
+            List(selection: $selectedMemberId) {
+                ForEach(sortedMembers) { member in
+                    memberRow(member)
+                        .tag(member.id)
+                        .contextMenu {
+                            Button("Darsteller löschen", role: .destructive) { removeMember(member.id) }
                         }
-                        .padding(.vertical, 6)
-                    }
-                    .onDelete { role.tracks.remove(atOffsets: $0) }
                 }
-
-                HStack {
-                    Button("+ Kanal") { role.tracks.append(NuendoTrack()) }
-                        .buttonStyle(.bordered)
+                .onMove(perform: moveMembers)
+                .onDelete { offsets in
+                    let ids = offsets.map { sortedMembers[$0].id }
+                    role.members.removeAll { ids.contains($0.id) }
                 }
-                .padding(10)
             }
-            .frame(width: trackW)
-            .frame(maxHeight: .infinity)
+
+            Divider()
+            AddRemoveBar(addHelp: "Darsteller hinzufügen",
+                         removeHelp: "Ausgewählten Darsteller löschen",
+                         canRemove: selectedMemberId != nil,
+                         onAdd: addMember,
+                         onRemove: { if let id = selectedMemberId { removeMember(id) } })
 
             Divider()
 
-            // Members column (fills remaining width)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Darsteller")
-                    .font(.headline)
-                    .padding([.horizontal, .top], 12)
-                    .padding(.bottom, 4)
+            SectionHeader(title: "Cover")
 
-                // "Singt auch für" — when the linked role is "cut", this role uses Ballett-variants.
-                HStack(spacing: 6) {
-                    Text("Singt auch für:")
-                        .font(.caption).foregroundColor(.secondary)
-                    Picker("", selection: Binding<String>(
-                        get: { role.borrowsLinesFromRoleId?.uuidString ?? "" },
-                        set: { newValue in
-                            role.borrowsLinesFromRoleId = newValue.isEmpty ? nil : UUID(uuidString: newValue)
+            List(selection: $selectedCoverId) {
+                ForEach($role.covers) { $cover in
+                    coverRow($cover)
+                        .tag(cover.id)
+                        .contextMenu {
+                            Button("Cover löschen", role: .destructive) { removeCover(cover.id) }
                         }
-                    )) {
-                        Text("—").tag("")
-                        ForEach(allRoles.filter { $0.id != role.id }) { r in
-                            Text(r.name).tag(r.id.uuidString)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 6)
-
-                List(selection: $selectedMemberId) {
-                    let sortedIndices = role.members.indices.sorted { role.members[$0].versionPosition < role.members[$1].versionPosition }
-                    ForEach(sortedIndices, id: \.self) { idx in
-                        let member = role.members[idx]
-                        let isVariant = member.coverVariantOf != nil
-                        let parentName = isVariant
-                            ? (role.members.first(where: { $0.id == member.coverVariantOf })?.name ?? "?")
-                            : ""
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 8) {
-                                TextField("Name", text: Binding(
-                                    get: { role.members[idx].name },
-                                    set: { role.members[idx].name = $0 }
-                                ))
-                                .italic(isVariant)
-                                Spacer()
-                                // Reorder arrows only — no visible position number. ↑ moves up in
-                                // the list, ↓ moves down. versionPosition just drives sort order.
-                                Stepper("",
-                                    onIncrement: { setPosition(for: member.id, to: max(1, member.versionPosition - 1)) },
-                                    onDecrement: { setPosition(for: member.id, to: min(32, member.versionPosition + 1)) }
-                                )
-                                .labelsHidden()
-                                .help("Reihenfolge im Live-Picker")
-                            }
-                            // Variant link, displayed as a clickable label opening a menu.
-                            // - For Principals (no link): "als Ballett-Variante markieren"
-                            // - For Variants: "↪ Variante von <Name>" — click to change/remove
-                            let principalsForLink = role.members
-                                .filter { $0.id != member.id && $0.coverVariantOf == nil }
-                                .sorted { $0.versionPosition < $1.versionPosition }
-                            Menu {
-                                Button("— (kein Link)") {
-                                    role.members[idx].coverVariantOf = nil
-                                }
-                                if !principalsForLink.isEmpty {
-                                    Divider()
-                                    ForEach(principalsForLink) { p in
-                                        Button(p.name) {
-                                            role.members[idx].coverVariantOf = p.id
-                                        }
-                                    }
-                                }
-                            } label: {
-                                Text(isVariant ? "↪ Variante von \(parentName)" : "als Ballett-Variante markieren")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
-                            .padding(.leading, 2)
-                        }
-                        .padding(.vertical, 2)
-                        .tag(member.id)
-                    }
-                    .onDelete { offsets in
-                        let sorted = role.members.indices.sorted { role.members[$0].versionPosition < role.members[$1].versionPosition }
-                        let toRemove = offsets.map { sorted[$0] }
-                        role.members.remove(atOffsets: IndexSet(toRemove))
-                    }
-                }
-
-                HStack {
-                    Button("+ Darsteller") {
-                        var m = CastMember()
-                        m.versionPosition = nextFreePosition()
-                        role.members.append(m)
-                        selectedMemberId = m.id
-                        // Auto-raise versionCount on all tracks to cover the new member count.
-                        // Must also sync slotAssignments — otherwise the array stays shorter than
-                        // versionCount and the slot picker crashes with "Index out of range".
-                        let count = role.members.count
-                        for i in role.tracks.indices where role.tracks[i].versionCount < count {
-                            role.tracks[i].versionCount = count
-                            role.tracks[i].syncSlotAssignmentsToVersionCount()
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding(.horizontal, 10)
-                .padding(.top, 6)
-                .padding(.bottom, 4)
-
-                Divider()
-
-                // Cover section
-                Text("Cover")
-                    .font(.headline)
-                    .padding([.horizontal, .top], 12)
-                    .padding(.bottom, 4)
-
-                List {
-                    ForEach($role.covers) { $cover in
-                        VStack(alignment: .leading, spacing: 4) {
-                            TextField("Name", text: $cover.name)
-                                .font(.system(size: 12, weight: .medium))
-                            HStack(spacing: 4) {
-                                Text("Playback:")
-                                    .font(.caption2).foregroundColor(.secondary)
-                                Picker("", selection: Binding<String>(
-                                    get: { cover.fixedSourceMemberId?.uuidString ?? "" },
-                                    set: { newValue in
-                                        cover.fixedSourceMemberId = newValue.isEmpty
-                                            ? nil
-                                            : UUID(uuidString: newValue)
-                                    }
-                                )) {
-                                    Text("Auto (dynamisch)").tag("")
-                                    // Only real principals, never variants
-                                    ForEach(role.members
-                                        .filter { $0.coverVariantOf == nil }
-                                        .sorted { $0.versionPosition < $1.versionPosition }) { m in
-                                        Text(m.name).tag(m.id.uuidString)
-                                    }
-                                }
-                                .labelsHidden()
-                                .frame(maxWidth: .infinity)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    .onDelete { role.covers.remove(atOffsets: $0) }
-                }
-
-                HStack {
-                    Button("+ Cover") {
-                        role.covers.append(Cover())
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .padding(10)
-
-                if let member = role.members.first(where: { $0.id == selectedMemberId }) {
-                    Divider()
-                    MidiSequencePreview(role: role, member: member)
-                }
+                .onDelete { role.covers.remove(atOffsets: $0) }
             }
-            .frame(minWidth: memberMinW, maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+            AddRemoveBar(addHelp: "Cover hinzufügen",
+                         removeHelp: "Ausgewähltes Cover löschen",
+                         canRemove: selectedCoverId != nil,
+                         onAdd: addCover,
+                         onRemove: { if let id = selectedCoverId { removeCover(id) } })
+
+            if let member = role.members.first(where: { $0.id == selectedMemberId }) {
+                Divider()
+                MidiSequencePreview(role: role, member: member)
+            }
         }
+    }
+
+    private func memberRow(_ member: CastMember) -> some View {
+        let isVariant = member.coverVariantOf != nil
+        let parentName = role.members.first(where: { $0.id == member.coverVariantOf })?.name ?? "?"
+        let linkTargets = principals.filter { $0.id != member.id }
+        return VStack(alignment: .leading, spacing: 2) {
+            TextField("Name", text: memberBinding(member.id).name)
+                .font(UI.itemTitle)
+                .italic(isVariant)
+            // Variant link, displayed as a clickable caption opening a menu.
+            // - For principals (no link): "Als Ballett-Variante markieren"
+            // - For variants: "↪ Variante von <Name>" — click to change/remove
+            Menu {
+                Button("— (keine Variante)") {
+                    memberBinding(member.id).wrappedValue.coverVariantOf = nil
+                }
+                if !linkTargets.isEmpty {
+                    Divider()
+                    ForEach(linkTargets) { p in
+                        Button(p.name) {
+                            memberBinding(member.id).wrappedValue.coverVariantOf = p.id
+                        }
+                    }
+                }
+            } label: {
+                Text(isVariant ? "↪ Variante von \(parentName)" : "Als Ballett-Variante markieren")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func coverRow(_ cover: Binding<Cover>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TextField("Name", text: cover.name)
+                .font(UI.itemTitle)
+            FieldRow("Playback") {
+                Picker("", selection: Binding<String>(
+                    get: { cover.wrappedValue.fixedSourceMemberId?.uuidString ?? "" },
+                    set: { newValue in
+                        cover.wrappedValue.fixedSourceMemberId = newValue.isEmpty ? nil : UUID(uuidString: newValue)
+                    }
+                )) {
+                    Text("Auto (dynamisch)").tag("")
+                    ForEach(principals) { m in
+                        Text(m.name).tag(m.id.uuidString)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 180, alignment: .leading)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// Drag-reorder: renumber versionPosition 1…n in the new order. It drives the live-picker order
+    /// and the priority of dynamic covers; slot assignments are UUID-based and stay untouched.
+    private func moveMembers(from source: IndexSet, to destination: Int) {
+        var ids = sortedMembers.map(\.id)
+        ids.move(fromOffsets: source, toOffset: destination)
+        var members = role.members
+        for (pos, id) in ids.enumerated() {
+            if let i = members.firstIndex(where: { $0.id == id }) { members[i].versionPosition = pos + 1 }
+        }
+        role.members = members
+    }
+
+    private func addMember() {
+        var r = role
+        var m = CastMember()
+        m.versionPosition = nextFreePosition()
+        r.members.append(m)
+        // Auto-raise versionCount on all tracks to cover the new member count.
+        // Must also sync slotAssignments — otherwise the array stays shorter than
+        // versionCount and the slot picker crashes with "Index out of range".
+        let count = r.members.count
+        for i in r.tracks.indices where r.tracks[i].versionCount < count {
+            r.tracks[i].versionCount = count
+            r.tracks[i].syncSlotAssignmentsToVersionCount()
+        }
+        role = r
+        selectedMemberId = m.id
+    }
+
+    private func removeMember(_ id: UUID) {
+        if selectedMemberId == id { selectedMemberId = nil }
+        role.members.removeAll { $0.id == id }
+    }
+
+    private func addCover() {
+        let c = Cover(name: "Neues Cover")
+        role.covers.append(c)
+        selectedCoverId = c.id
+    }
+
+    private func removeCover(_ id: UUID) {
+        if selectedCoverId == id { selectedCoverId = nil }
+        role.covers.removeAll { $0.id == id }
     }
 }
 
@@ -1733,7 +1832,7 @@ struct MidiSequencePreview: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Vorschau MIDI-Sequenz für \(member.name)")
                 .font(.caption).bold().foregroundColor(.secondary)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, UI.pad)
                 .padding(.top, 8)
 
             ScrollView {
@@ -1742,7 +1841,7 @@ struct MidiSequencePreview: View {
                         Text(line)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.secondary)
-                            .padding(.horizontal, 10)
+                            .padding(.horizontal, UI.pad)
                     }
                 }
                 .padding(.bottom, 8)
@@ -1808,28 +1907,30 @@ struct MidiCommandRow: View {
             case .pc:
                 Text("PC").font(.caption).foregroundColor(.secondary)
                 TextField("0", value: $cmd.value1, formatter: midiFmt)
-                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .frame(width: 44).textFieldStyle(.roundedBorder)
                     .font(.system(size: 12).monospacedDigit())
             case .note:
                 Text("Nr").font(.caption).foregroundColor(.secondary)
                 TextField("0", value: $cmd.value1, formatter: midiFmt)
-                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .frame(width: 44).textFieldStyle(.roundedBorder)
                     .font(.system(size: 12).monospacedDigit())
                 Text("Vel").font(.caption).foregroundColor(.secondary)
                 TextField("127", value: $cmd.value2, formatter: midiFmt)
-                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .frame(width: 44).textFieldStyle(.roundedBorder)
                     .font(.system(size: 12).monospacedDigit())
             case .cc:
                 Text("CC").font(.caption).foregroundColor(.secondary)
                 TextField("0", value: $cmd.value1, formatter: midiFmt)
-                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .frame(width: 44).textFieldStyle(.roundedBorder)
                     .font(.system(size: 12).monospacedDigit())
                 Text("Val").font(.caption).foregroundColor(.secondary)
                 TextField("127", value: $cmd.value2, formatter: midiFmt)
-                    .frame(width: 50).textFieldStyle(.roundedBorder)
+                    .frame(width: 44).textFieldStyle(.roundedBorder)
                     .font(.system(size: 12).monospacedDigit())
             }
         }
+        // In grouped Forms (Settings) a TextField's title would otherwise render as an extra label.
+        .labelsHidden()
     }
 
     private var midiFmt: NumberFormatter {
@@ -1837,6 +1938,209 @@ struct MidiCommandRow: View {
     }
     private var channelFmt: NumberFormatter {
         let f = NumberFormatter(); f.minimum = 1; f.maximum = 16; f.allowsFloats = false; return f
+    }
+}
+
+// MARK: - Settings (⌘,)
+
+struct SettingsView: View {
+    @ObservedObject var midi: MidiController
+    @ObservedObject var updater: UpdateChecker
+
+    var body: some View {
+        TabView {
+            MidiSettingsTab(midi: midi)
+                .tabItem { Label("MIDI", systemImage: "pianokeys") }
+            EmailSettingsTab(midi: midi)
+                .tabItem { Label("E-Mail", systemImage: "envelope") }
+            UpdateSettingsTab(updater: updater)
+                .tabItem { Label("Update", systemImage: "arrow.down.circle") }
+        }
+        .frame(width: 620)
+        .onChange(of: midi.config) { midi.saveConfig() }
+    }
+}
+
+struct MidiSettingsTab: View {
+    @ObservedObject var midi: MidiController
+
+    var body: some View {
+        Form {
+            Section("Ausgang") {
+                HStack {
+                    Picker("MIDI-Ausgang", selection: $midi.config.midiOutputName) {
+                        Text("Virtuelle Quelle (CastPilot Source)").tag("")
+                        ForEach(midi.availableDestinations) { dest in
+                            Text(dest.name).tag(dest.name)
+                        }
+                    }
+                    Button { midi.refreshDestinations() } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("MIDI-Geräte neu einlesen")
+                }
+            }
+
+            Section("Timing") {
+                msField("Verzögerung", value: $midi.config.delayMs,
+                        help: "Pause zwischen einzelnen MIDI-Befehlen")
+                msField("Pause zwischen Rollen", value: $midi.config.interRoleDelayMs,
+                        help: "Zusätzliche Pause zwischen den Befehlsblöcken verschiedener Rollen, damit Nuendo bei vielen Rollen nicht überlastet wird.")
+            }
+
+            Section("Nuendo-Navigation") {
+                LabeledContent("Vorherige Track-Version") {
+                    MidiCommandRow(cmd: $midi.config.prevVersionCommand)
+                }
+                LabeledContent("Nächste Track-Version") {
+                    MidiCommandRow(cmd: $midi.config.nextVersionCommand)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func msField(_ label: String, value: Binding<Int>, help: String) -> some View {
+        LabeledContent(label) {
+            HStack(spacing: 4) {
+                TextField("", value: value, formatter: UI.integer)
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 60)
+                Text("ms").foregroundColor(.secondary)
+            }
+        }
+        .help(help)
+    }
+}
+
+struct EmailSettingsTab: View {
+    @ObservedObject var midi: MidiController
+    @State private var password = ""
+    @State private var savedConfirmed = false
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Server", text: $midi.config.emailConfig.imapServer, prompt: Text("imap.gmx.de"))
+                TextField("Port", value: $midi.config.emailConfig.imapPort, formatter: UI.integer, prompt: Text("993"))
+                TextField("Benutzername", text: $midi.config.emailConfig.username, prompt: Text("name@gmx.de"))
+                SecureField("Passwort", text: $password)
+            } header: {
+                Text("IMAP-Konto")
+            } footer: {
+                Text("Das Passwort liegt im macOS-Schlüsselbund.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button {
+                    keychainSave(account: midi.config.emailConfig.username, secret: password)
+                    midi.saveConfig()
+                    savedConfirmed = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { savedConfirmed = false }
+                } label: {
+                    Label(savedConfirmed ? "Gesichert" : "Sichern",
+                          systemImage: savedConfirmed ? "checkmark" : "key")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { password = keychainLoad(account: midi.config.emailConfig.username) ?? "" }
+    }
+}
+
+struct UpdateSettingsTab: View {
+    @ObservedObject var updater: UpdateChecker
+    @State private var copyConfirmed = false
+    @State private var showInstallConfirm = false
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Installierte Version") {
+                    Text(updater.currentVersion)
+                }
+
+                HStack {
+                    Spacer()
+                    Button {
+                        Task { await updater.check() }
+                    } label: {
+                        if updater.isChecking {
+                            ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
+                        } else {
+                            Text("Auf Update prüfen")
+                        }
+                    }
+                    .disabled(updater.isChecking)
+                }
+
+                if let err = updater.lastError {
+                    Text(err).font(.caption).foregroundColor(.red)
+                } else if let latest = updater.latestVersion {
+                    if updater.updateAvailable {
+                        Label("Version \(latest) verfügbar", systemImage: "arrow.up.circle.fill")
+                            .foregroundColor(.accentColor)
+
+                        if updater.isInstalling {
+                            HStack(spacing: 8) {
+                                ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
+                                Text("Lade herunter und installiere …")
+                                    .font(.caption).foregroundColor(.secondary)
+                            }
+                        } else {
+                            HStack {
+                                Button("Auf GitHub öffnen") {
+                                    NSWorkspace.shared.open(updater.releasePageURL)
+                                }
+                                .buttonStyle(.borderless)
+                                Spacer()
+                                Button {
+                                    showInstallConfirm = true
+                                } label: {
+                                    Label("Jetzt aktualisieren", systemImage: "arrow.down.circle.fill")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .confirmationDialog("Version \(latest) installieren?",
+                                                    isPresented: $showInstallConfirm) {
+                                    Button("Installieren und neu starten") {
+                                        Task { await updater.downloadAndInstall() }
+                                    }
+                                    Button("Abbrechen", role: .cancel) { }
+                                } message: {
+                                    Text("CastPilot lädt die neue Version herunter, ersetzt sich selbst und startet neu. Die Konfiguration bleibt erhalten.")
+                                }
+                            }
+                        }
+
+                        // Fallback: if the in-app install failed, surface the error and
+                        // the old copy-to-Terminal command as a manual escape hatch.
+                        if let ierr = updater.installError {
+                            Text("Automatisches Update fehlgeschlagen: \(ierr)")
+                                .font(.caption).foregroundColor(.red)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(UpdateChecker.updateCommand, forType: .string)
+                                copyConfirmed = true
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copyConfirmed = false }
+                            } label: {
+                                Label(copyConfirmed ? "Kopiert" : "Terminal-Befehl kopieren (Fallback)",
+                                      systemImage: copyConfirmed ? "checkmark" : "doc.on.doc")
+                            }
+                        }
+                    } else {
+                        Text("Du hast die neueste Version.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -1874,8 +2178,8 @@ enum IMAPError: LocalizedError {
         switch self {
         case .connectionFailed(let m): return "Verbindung fehlgeschlagen: \(m)"
         case .authFailed:              return "Anmeldung fehlgeschlagen. Zugangsdaten prüfen."
-        case .noEmailFound:            return "Keine 'Cast Information' Email gefunden."
-        case .fetchFailed:             return "Email-Inhalt konnte nicht geladen werden."
+        case .noEmailFound:            return "Keine E-Mail mit „Cast Information“ im Betreff gefunden."
+        case .fetchFailed:             return "E-Mail-Inhalt konnte nicht geladen werden."
         }
     }
 }
@@ -2158,7 +2462,7 @@ struct EmailView: View {
             // Header
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Cast Email Import")
+                    Text("Besetzung aus E-Mail")
                         .font(.headline)
                     Text(imap.statusMessage.isEmpty ? "Bereit" : imap.statusMessage)
                         .font(.caption).foregroundColor(.secondary)
@@ -2198,13 +2502,13 @@ struct EmailView: View {
         HStack(spacing: 0) {
             // Left: original email text
             VStack(alignment: .leading, spacing: 0) {
-                Text("Original Email").font(.caption.bold()).foregroundColor(.secondary)
+                Text("Original-E-Mail").font(.caption.bold()).foregroundColor(.secondary)
                     .padding(.horizontal, 12).padding(.vertical, 8)
                 Divider()
                 ScrollViewReader { proxy in
                     ScrollView {
                         if imap.rawEmailText.isEmpty {
-                            Text("Noch keine Email geladen.")
+                            Text("Noch keine E-Mail geladen.")
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.secondary)
                                 .padding(12)
@@ -2246,8 +2550,8 @@ struct EmailView: View {
                         Image(systemName: imap.rawEmailText.isEmpty ? "envelope.open" : "questionmark.circle")
                             .font(.largeTitle).foregroundColor(.secondary.opacity(0.4))
                         Text(imap.rawEmailText.isEmpty
-                             ? "Email abrufen um Besetzung zu importieren."
-                             : "Keine Rollen erkannt.\nEmail-Schlüsselwörter in den Einstellungen prüfen.")
+                             ? "E-Mail abrufen, um die Besetzung zu importieren."
+                             : "Keine Rollen erkannt.\nStichwörter der Rollen im Show-Editor prüfen.")
                             .font(.callout).foregroundColor(.secondary).multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2272,7 +2576,7 @@ struct EmailView: View {
                                         set: { emailClient.pending[role.id] = $0 }
                                     )) {
                                         Text("—").tag(UUID?.none)
-                                        ForEach(role.members) { m in Text(m.name).tag(UUID?.some(m.id)) }
+                                        ForEach(role.members) { m in Text(memberDisplayName(m)).tag(UUID?.some(m.id)) }
                                     }
                                     .labelsHidden().frame(width: 150)
                                 }
