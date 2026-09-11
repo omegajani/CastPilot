@@ -7,13 +7,6 @@
 
 A compact macOS utility for live shows. It automates Nuendo track version switching based on the daily cast, including ballet covers who borrow playback from absent principals.
 
-<table>
-  <tr>
-    <td align="center"><img src="docs/screenshots/live.png" width="240" alt="Live window"><br><sub>Live window</sub></td>
-    <td align="center"><img src="docs/screenshots/show-editor.png" width="560" alt="Show editor"><br><sub>Show editor</sub></td>
-  </tr>
-</table>
-
 ## What it does
 
 In live shows running with Nuendo, each role (e.g. *NOVA*, *AURORA*, *ECHO*) has several performers, each recorded on a separate **Track Version**. The cast changes every day. CastPilot sends the exact MIDI sequence needed to select each track and move to the right version, all in one click.
@@ -92,10 +85,10 @@ All changes are saved to `config.json` automatically. **Als Show sichern** addit
 
 From **v1.9** onward CastPilot updates itself in-app (Settings → Update → *Jetzt aktualisieren*). You only need the Terminal command for the **first** install, or when migrating from a sandboxed build ≤ 1.8, which can't replace itself.
 
-The command downloads release **v2.2.0** of this branch and removes any old `Midi Cast Switcher.app`. It then installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
+The command downloads release **v2.2.1** of this branch and removes any old `Midi Cast Switcher.app`. It then installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
 
 ```bash
-curl -sL "$(curl -sL https://api.github.com/repos/omegajani/CastPilot/releases/tags/v2.2.0 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
+curl -sL "$(curl -sL https://api.github.com/repos/omegajani/CastPilot/releases/tags/v2.2.1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
 unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
 rm -rf "/Applications/Midi Cast Switcher.app" "/Applications/CastPilot.app" && \
 mv "/tmp/MCS/CastPilot.app" /Applications/ && \
@@ -178,6 +171,7 @@ The link between role and e-mail is the role's **Stichwort** in the show editor 
 - **New Settings window (⌘,)** for MIDI, e-mail and updates.
 - **Repo renamed** to `omegajani/CastPilot`.
 - The MIDI output is unchanged. It was verified byte for byte against v2.1.3.
+- **2.2.1:** the bundled example `config.json` and Nuendo XML are a neutral demo show.
 
 ## Built with
 
