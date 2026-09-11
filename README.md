@@ -7,6 +7,13 @@
 
 A compact macOS utility for live shows. It automates Nuendo track version switching based on the daily cast, including ballet covers who borrow playback from absent principals.
 
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/live.png" width="240" alt="Live window"><br><sub>Live window</sub></td>
+    <td align="center"><img src="docs/screenshots/show-editor.png" width="560" alt="Show editor"><br><sub>Show editor</sub></td>
+  </tr>
+</table>
+
 ## What it does
 
 In live shows running with Nuendo, each role (e.g. *NOVA*, *AURORA*, *ECHO*) has several performers, each recorded on a separate **Track Version**. The cast changes every day. CastPilot sends the exact MIDI sequence needed to select each track and move to the right version, all in one click.
