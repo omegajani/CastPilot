@@ -14,3 +14,7 @@ DerivedData/
 
 # Local build output
 build/
+
+# Python (Skill-Scripts)
+__pycache__/
+*.pyc
