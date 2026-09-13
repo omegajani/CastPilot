@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Zweiter Controller ohne Track-Selects und ohne TrackVersions-Aktionen.
+     Negativtest: der Parser muss hier sauber "nichts gefunden" melden, statt
+     Transport-Controls als Track-Kommandos zu verkaufen. -->
+<remotedescription version="1.1">
+ <ctrltable name="Standard MIDI">
+  <ctrl><name>Play</name><stat>144</stat><chan>2</chan><addr>1</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Stop</name><stat>144</stat><chan>2</chan><addr>2</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>RECORD</name><stat>144</stat><chan>2</chan><addr>3</addr><max>127</max><flags>1</flags></ctrl>
+ </ctrltable>
+ <bank name="VST 17-32">
+  <entry ctrl="Play"><command><category>Transport</category><action>Start</action><flags>1</flags></command></entry>
+  <entry ctrl="Stop"><command><category>Transport</category><action>Stop</action><flags>1</flags></command></entry>
+ </bank>
+ <bank name="Unbenannt">
+  <entry ctrl="Play"><command><category>Transport</category><action>Record</action><flags>1</flags></command></entry>
+ </bank>
+</remotedescription>

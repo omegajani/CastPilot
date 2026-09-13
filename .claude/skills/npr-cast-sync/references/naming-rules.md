@@ -80,6 +80,25 @@ die Variante. Genau das ist gewollt.
 (`members.first(where: coverVariantOf == …)`). Zwei Ballett-Fassungen derselben Person
 in einer Rolle meldet die Validierung als Fehler.
 
+## Tracknamen: Projekt vs. Generic-Remote-XML
+
+Die Versionsnamen oben betreffen die *Sänger*. Davon unabhängig weichen die **Track**-Namen
+zwischen Nuendo-Projekt und Generic-Remote-XML ab, weil beide von verschiedenen Leuten
+gepflegt werden:
+
+| Projekt | XML | |
+|---|---|---|
+| `Luci …` | `Select Lucy …` | reine Schreibweise |
+| `… HH` | `… HS` | Handheld = Handsender, dasselbe Mikrofon |
+| `… TS` | `… TS` | Taschensender / Headset, identisch |
+| `… PB` (MIDI-Spur) | `… MIDI` | über die Trackart aufgelöst |
+
+Die ersten beiden werden per `--alias HH=HS --alias Luci=Lucy` überbrückt, Token für Token
+und ohne Rücksicht auf Groß-/Kleinschreibung. Das dritte macht der Skill selbst.
+
+Die **Rollennamen im Show-File kommen aus dem Projekt**, nicht aus der XML — die Rolle heißt
+also `Luci`, auch wenn das Control `Select Lucy PB` heißt.
+
 ## Mehrere datierte Fassungen
 
 `Oxy TS` trägt fünf Julia-Fassungen (`260701` … `260818`). CastPilot kann pro Track nur

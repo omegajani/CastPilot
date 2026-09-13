@@ -94,7 +94,9 @@ Der **erste String-Wert** im Payload eines Track-Events ist der Trackname.
 ## Grenzen
 
 - Tracknamen sind **nicht eindeutig**. Im Referenzprojekt existiert jede `… PB`-Spur
-  doppelt (Kopfhörer- und Saal-Playback). Nur die Projektreihenfolge trennt sie.
+  doppelt — einmal als `MAudioTrackEvent`, einmal als `MMidiTrackEvent`. Die **Trackart**
+  trennt sie zuverlässig; die Generic-Remote-XML hat dafür getrennte Controls
+  (`Select Dream PB` / `Select Dream MIDI`). Siehe `generic-remote-format.md`.
 - MIDI-Zuordnung, Routing, Plugin-Werte und Automationsdaten liegen als Event-Binär-
   blöcke vor und werden hier **nicht** dekodiert.
 - Getestet gegen Header `RIFF…NUNDROOT`. Ältere Cubase-Projekte sind ungeprüft.

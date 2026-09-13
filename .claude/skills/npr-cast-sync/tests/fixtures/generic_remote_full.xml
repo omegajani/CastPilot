@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Anonymisierter Nachbau einer echten Nuendo-Generic-Remote-Definition.
+     Struktur, Tag-Namen und Zahlenbereiche entsprechen dem Original; Rollen-
+     und Tracknamen sind erfunden (Alpha, Gamma).
+
+     Zwei Eigenheiten, die dieses Fixture absichern soll:
+       * <chan> heisst im <ctrl> MIDI-Kanal, im <entry><value> Mixer-Kanal.
+       * "step up" ist Previous Version, "step down" ist Next Version. -->
+<remotedescription version="1.1">
+ <ctrltable name="Standard MIDI">
+  <ctrl><name>step up</name><stat>144</stat><chan>0</chan><addr>7</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>step down</name><stat>144</stat><chan>0</chan><addr>8</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Select Alpha HS</name><stat>144</stat><chan>0</chan><addr>9</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Select Alpha TS</name><stat>144</stat><chan>0</chan><addr>10</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Select Alpha PB</name><stat>144</stat><chan>0</chan><addr>17</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Select Alpha MIDI</name><stat>144</stat><chan>0</chan><addr>18</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Select Gamma HS</name><stat>144</stat><chan>0</chan><addr>11</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Select Gamma TS</name><stat>144</stat><chan>0</chan><addr>12</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Select Gamma PB</name><stat>144</stat><chan>0</chan><addr>19</addr><max>127</max><flags>1</flags></ctrl>
+  <ctrl><name>Select Gamma MIDI</name><stat>144</stat><chan>0</chan><addr>20</addr><max>127</max><flags>1</flags></ctrl>
+ </ctrltable>
+ <bank name="VST 1-16">
+  <entry ctrl="step up"><command><category>TrackVersions</category><action>Previous Version</action><flags>1</flags></command></entry>
+  <entry ctrl="step down"><command><category>TrackVersions</category><action>Next Version</action><flags>1</flags></command></entry>
+  <entry ctrl="Select Alpha HS"><value><device>Mixer</device><chan>154</chan><name>selected</name><flags>0</flags></value></entry>
+  <entry ctrl="Select Alpha TS"><value><device>Mixer</device><chan>153</chan><name>selected</name><flags>0</flags></value></entry>
+  <entry ctrl="Select Alpha PB"><value><device>Mixer</device><chan>165</chan><name>selected</name><flags>0</flags></value></entry>
+  <entry ctrl="Select Alpha MIDI"><value><device>Mixer</device><chan>166</chan><name>selected</name><flags>0</flags></value></entry>
+  <entry ctrl="Select Gamma HS"><value><device>Mixer</device><chan>158</chan><name>selected</name><flags>0</flags></value></entry>
+  <entry ctrl="Select Gamma TS"><value><device>Mixer</device><chan>157</chan><name>selected</name><flags>0</flags></value></entry>
+  <entry ctrl="Select Gamma PB"><value><device>Mixer</device><chan>169</chan><name>selected</name><flags>0</flags></value></entry>
+  <entry ctrl="Select Gamma MIDI"><value><device>Mixer</device><chan>170</chan><name>selected</name><flags>0</flags></value></entry>
+ </bank>
+</remotedescription>
