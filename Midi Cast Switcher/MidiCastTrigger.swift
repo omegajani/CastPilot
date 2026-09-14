@@ -1005,8 +1005,7 @@ struct MidiCastSwitcherApp: App {
         DispatchQueue.main.async {
             for window in NSApplication.shared.windows {
                 if window.title == "CastPilot Live" {
-                    window.level = .floating
-                    window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                    LiveWindow.apply(to: window)   // always-on-top is optional (Settings → Allgemein)
                     window.titlebarAppearsTransparent = true
                     // The header already shows "CastPilot" + show name — don't repeat it in the title bar.
                     window.titleVisibility = .hidden
@@ -1014,6 +1013,37 @@ struct MidiCastSwitcherApp: App {
                 }
             }
         }
+    }
+}
+
+/// Keeps the live window above Nuendo and on every desktop — optional, per Mac
+/// (Settings → Allgemein, Window menu). On by default.
+enum LiveWindow {
+    static let onTopKey = "liveWindowAlwaysOnTop"
+    static var isOnTop: Bool { UserDefaults.standard.object(forKey: onTopKey) as? Bool ?? true }
+
+    /// Re-applies the setting to open live windows (after it was toggled).
+    static func applyLevel() {
+        DispatchQueue.main.async {
+            for window in NSApplication.shared.windows where window.title == "CastPilot Live" {
+                apply(to: window)
+            }
+        }
+    }
+
+    static func apply(to window: NSWindow) {
+        window.level = isOnTop ? .floating : .normal
+        window.collectionBehavior = isOnTop ? [.canJoinAllSpaces, .fullScreenAuxiliary] : []
+    }
+
+    /// Brings the existing live window to the front (un-minimizing it); opens one only if none exists.
+    static func show(orOpen open: () -> Void) {
+        guard let window = NSApplication.shared.windows.first(where: { $0.title == "CastPilot Live" }) else {
+            open()
+            return
+        }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -1129,6 +1159,7 @@ enum ShowActions {
 struct ShowCommands: Commands {
     @ObservedObject var midi: MidiController
     @Environment(\.openWindow) private var openWindow
+    @AppStorage(LiveWindow.onTopKey) private var liveWindowOnTop = true
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -1157,8 +1188,9 @@ struct ShowCommands: Commands {
                 .disabled(midi.showFileURL == nil)
         }
         CommandGroup(before: .windowList) {
-            Button("Live-Fenster") { openWindow(id: "live") }
+            Button("Live-Fenster") { LiveWindow.show { openWindow(id: "live") } }
                 .keyboardShortcut("l")
+            Toggle("Live-Fenster immer im Vordergrund", isOn: $liveWindowOnTop)
             Divider()
         }
     }
@@ -1269,6 +1301,7 @@ struct LiveView: View {
     @ObservedObject var emailClient: IMAPClient
     @State private var fireScale: CGFloat = 1.0
     @Environment(\.openWindow) private var openWindow
+    @AppStorage(LiveWindow.onTopKey) private var liveWindowOnTop = true
 
     private let nameW: CGFloat = 52
 
@@ -1298,6 +1331,7 @@ struct LiveView: View {
         }
         .frame(minWidth: 240, idealWidth: 280, maxWidth: 400)
         .onChange(of: midi.config) { midi.saveConfig() }
+        .onChange(of: liveWindowOnTop) { LiveWindow.applyLevel() }
     }
 
     // MARK: Header
@@ -2161,6 +2195,8 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            GeneralSettingsTab()
+                .tabItem { Label("Allgemein", systemImage: "gearshape") }
             MidiSettingsTab(midi: midi)
                 .tabItem { Label("MIDI", systemImage: "pianokeys") }
             EmailSettingsTab(midi: midi)
@@ -2170,6 +2206,22 @@ struct SettingsView: View {
         }
         .frame(width: 620)
         .onChange(of: midi.config) { midi.saveConfig() }
+    }
+}
+
+struct GeneralSettingsTab: View {
+    @AppStorage(LiveWindow.onTopKey) private var liveWindowOnTop = true
+
+    var body: some View {
+        Form {
+            Section("Live-Fenster") {
+                Toggle("Immer im Vordergrund", isOn: $liveWindowOnTop)
+                Text("Das Live-Fenster bleibt über Nuendo und erscheint auf allen Schreibtischen. Gilt nur für diesen Mac.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

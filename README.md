@@ -37,7 +37,7 @@ You don't need a global "ballet today" toggle, because these rules resolve corre
 
 ## Live window
 
-- **Always on top of Nuendo.** It is about 280 px wide and shows one row per role.
+- **Stays on top of Nuendo** by default. You can switch this off in Settings → Allgemein or in the Window menu. It is about 280 px wide and shows one row per role.
 - **Cast menu.** Each role's menu lists the principals first, then the covers in their own **Cover** section. Ballett-variant members are hidden here.
 - **Covers are orange.** When a cover is selected, the row turns orange and shows a **Cover** tag plus the resolved playback source (*via Sofia Ballett*). A ⚠ appears when several principals are absent, or when no playback is free.
 - **⊕ *Role*** shows when this role also sings the lines of a role that is *cut* today.
@@ -86,6 +86,7 @@ A show is a file (`.castpilot`), like a document. Opening and saving live in the
 
 ## Settings (⌘,)
 
+- **Allgemein:** keep the live window on top of other windows (on by default, per Mac).
 - **MIDI:**
   - the output: the virtual *CastPilot Source*, a USB interface or an Apple Network MIDI session,
   - *Verzögerung* (the pause between commands) and *Pause zwischen Rollen*,
@@ -112,10 +113,10 @@ A show is a file (`.castpilot`), like a document. Opening and saving live in the
 
 From **v1.9** onward CastPilot updates itself in-app (Settings → Update → *Jetzt aktualisieren*). You only need the Terminal command for the **first** install, or when migrating from a sandboxed build ≤ 1.8, which can't replace itself.
 
-The command downloads release **v2.3.0** of this branch and removes any old `Midi Cast Switcher.app`. It then installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
+The command downloads release **v2.3.1** of this branch and removes any old `Midi Cast Switcher.app`. It then installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
 
 ```bash
-curl -sL "$(curl -sL https://api.github.com/repos/omegajani/CastPilot/releases/tags/v2.3.0 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
+curl -sL "$(curl -sL https://api.github.com/repos/omegajani/CastPilot/releases/tags/v2.3.1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
 unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
 rm -rf "/Applications/Midi Cast Switcher.app" "/Applications/CastPilot.app" && \
 mv "/tmp/MCS/CastPilot.app" /Applications/ && \
@@ -188,6 +189,7 @@ The link between role and e-mail is the role's **Stichwort** in the show editor 
 - **Show files contain only the show.** MIDI output, e-mail account, timing and today's cast stay on each Mac.
 - The editor's show block is reduced to the show name and its save status. New *Live-Fenster* item (⌘L) in the Window menu.
 - The MIDI output is unchanged. It was verified against 2.2.1.
+- **2.3.1:** keeping the live window on top is optional (Settings → Allgemein, Window menu).
 
 ## What's new in 2.2
 
