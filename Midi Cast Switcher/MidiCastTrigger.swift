@@ -260,13 +260,13 @@ struct AppConfig: Codable, Equatable {
     var roles: [Role] = []
     var emailConfig: EmailConfig = EmailConfig()
     var midiOutputName: String = ""   // empty = virtual source
-    /// Name of the currently loaded show. Part of the full config, so it persists in
-    /// config.json and travels inside every saved .castpilot show file. Shown in the
-    /// live and config windows.
+    /// Name of the open show (= its file name). Shown in the live and editor windows.
     var showName: String = "Unbenannt"
+    /// Path of the open .castpilot show file; nil until the show is saved to a file.
+    var currentShowPath: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case delayMs, interRoleDelayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName, showName
+        case delayMs, interRoleDelayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName, showName, currentShowPath
     }
 
     init(delayMs: Int = 100,
@@ -274,7 +274,7 @@ struct AppConfig: Codable, Equatable {
          prevVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127),
          nextVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127),
          roles: [Role] = [], emailConfig: EmailConfig = EmailConfig(), midiOutputName: String = "",
-         showName: String = "Unbenannt") {
+         showName: String = "Unbenannt", currentShowPath: String? = nil) {
         self.delayMs = delayMs
         self.interRoleDelayMs = interRoleDelayMs
         self.prevVersionCommand = prevVersionCommand
@@ -283,6 +283,7 @@ struct AppConfig: Codable, Equatable {
         self.emailConfig = emailConfig
         self.midiOutputName = midiOutputName
         self.showName = showName
+        self.currentShowPath = currentShowPath
     }
 
     init(from decoder: Decoder) throws {
@@ -295,6 +296,91 @@ struct AppConfig: Codable, Equatable {
         emailConfig        = (try? c.decodeIfPresent(EmailConfig.self,  forKey: .emailConfig))        ?? EmailConfig()
         midiOutputName     = (try? c.decodeIfPresent(String.self,       forKey: .midiOutputName))     ?? ""
         showName           = (try? c.decodeIfPresent(String.self,       forKey: .showName))           ?? "Unbenannt"
+        currentShowPath    = (try? c.decodeIfPresent(String.self,       forKey: .currentShowPath))    ?? nil
+    }
+}
+
+// MARK: - Show file
+
+/// Contents of a .castpilot show file: the show itself — never this machine's settings
+/// (MIDI output, e-mail account, timing) or today's cast. The keys match AppConfig, so
+/// show files written by older versions (a complete AppConfig) open unchanged.
+struct ShowFile: Codable, Equatable {
+    var formatVersion: Int = 2
+    var showName: String = "Unbenannt"
+    var roles: [Role] = []
+    var prevVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127)
+    var nextVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127)
+
+    enum CodingKeys: String, CodingKey {
+        case formatVersion, showName, roles, prevVersionCommand, nextVersionCommand
+    }
+
+    /// The show part of a config, with today's cast removed.
+    init(config: AppConfig) {
+        showName = config.showName
+        roles = config.roles.map { var r = $0; r.selectedMemberId = nil; return r }
+        prevVersionCommand = config.prevVersionCommand
+        nextVersionCommand = config.nextVersionCommand
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        formatVersion      = (try? c.decodeIfPresent(Int.self,         forKey: .formatVersion))      ?? 1
+        showName           = (try? c.decodeIfPresent(String.self,      forKey: .showName))           ?? "Unbenannt"
+        prevVersionCommand = (try? c.decodeIfPresent(MidiCommand.self, forKey: .prevVersionCommand)) ?? MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127)
+        nextVersionCommand = (try? c.decodeIfPresent(MidiCommand.self, forKey: .nextVersionCommand)) ?? MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127)
+        // Old files carry a cast and pre-1.3 slot data: drop the cast, normalize the slots.
+        roles = ((try? c.decodeIfPresent([Role].self, forKey: .roles)) ?? []).map { role in
+            var r = role
+            r.selectedMemberId = nil
+            r.migrateLegacySlots()
+            return r
+        }
+    }
+
+    /// Same show content, regardless of the file format version it was read from.
+    static func == (a: ShowFile, b: ShowFile) -> Bool {
+        a.showName == b.showName && a.roles == b.roles
+            && a.prevVersionCommand == b.prevVersionCommand && a.nextVersionCommand == b.nextVersionCommand
+    }
+}
+
+enum ShowFileError: LocalizedError {
+    case noRoles
+    var errorDescription: String? { "Die Datei enthält keine Rollen – ist das eine CastPilot-Show?" }
+}
+
+extension Role {
+    /// Builds slotAssignments from legacy slotOverrides + member.versionPosition data when a
+    /// track has none yet. Two phases so overrides win over defaults — otherwise a default
+    /// versionPosition can stomp on another member's explicit override.
+    mutating func migrateLegacySlots() {
+        for t in tracks.indices {
+            var track = tracks[t]
+            track.syncSlotAssignmentsToVersionCount()
+            let hasAnyAssignment = track.slotAssignments.contains(where: { $0 != nil })
+            if !hasAnyAssignment && !members.isEmpty {
+                // Phase 1: explicit overrides claim their slots first.
+                for member in members {
+                    if let slot = track.slotOverrides[member.id.uuidString],
+                       slot >= 1 && slot <= track.versionCount {
+                        track.slotAssignments[slot - 1] = member.id.uuidString
+                    }
+                }
+                // Phase 2: members without an override fill their versionPosition slot,
+                // but only if it's still free (don't displace anyone).
+                for member in members where track.slotOverrides[member.id.uuidString] == nil {
+                    let slot = member.versionPosition
+                    if slot >= 1 && slot <= track.versionCount && track.slotAssignments[slot - 1] == nil {
+                        track.slotAssignments[slot - 1] = member.id.uuidString
+                    }
+                }
+            }
+            // Legacy data no longer needed after migration
+            track.slotOverrides = [:]
+            tracks[t] = track
+        }
     }
 }
 
@@ -325,7 +411,8 @@ class MidiController: ObservableObject {
 
     @Published var config: AppConfig = AppConfig()
     @Published var availableDestinations: [MIDIDestinationInfo] = []
-    @Published var availableShows: [String] = []
+    @Published var savedSnapshot: ShowFile? = nil
+    @Published var recentShows: [URL] = []
     @Published var sendStatus: SendStatus = .idle
     let configURL: URL
     let showsDir: URL
@@ -356,75 +443,108 @@ class MidiController: ObservableObject {
         }
 
         loadConfig()
-        refreshShows()
+        loadSavedSnapshot()
+        loadRecentShows()
         setupMIDI()
         refreshDestinations()
     }
 
-    // MARK: - Shows (named full-config snapshots)
+    // MARK: - Shows (documents)
 
-    /// Sanitizes a show name into a safe filename.
-    private func showFileName(_ name: String) -> String {
-        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "/", with: "-")
-            .replacingOccurrences(of: ":", with: "-")
-        return (cleaned.isEmpty ? "Unbenannt" : cleaned) + ".castpilot"
+    /// The open show file, if the current show has been saved to or opened from disk.
+    var showFileURL: URL? { config.currentShowPath.map { URL(fileURLWithPath: $0) } }
+
+    /// True when the show itself (roles, tracks, navigation — not today's cast) differs
+    /// from what was last saved or opened.
+    var isShowModified: Bool {
+        guard let saved = savedSnapshot else { return true }
+        return ShowFile(config: config) != saved
     }
 
-    /// Scans the Shows folder and refreshes the list of available show names.
-    func refreshShows() {
-        let fm = FileManager.default
-        let files = (try? fm.contentsOfDirectory(at: showsDir, includingPropertiesForKeys: nil)) ?? []
-        availableShows = files
-            .filter { $0.pathExtension == "castpilot" }
-            .map { $0.deletingPathExtension().lastPathComponent }
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
+    /// Unsaved changes, or never saved to a file — drives the "●" hints.
+    var needsSave: Bool { showFileURL == nil || isShowModified }
 
-    /// Writes the current full config to the library under config.showName.
-    func saveShow() {
-        let url = showsDir.appendingPathComponent(showFileName(config.showName))
-        if let encoded = try? JSONEncoder().encode(config) {
-            try? encoded.write(to: url)
-            refreshShows()
+    /// Opens a show file: roles and navigation come from the file, this machine's settings
+    /// (MIDI output, e-mail, timing) stay. Today's cast is kept where the same role and
+    /// performer exist in the opened show.
+    func openShow(at url: URL) throws {
+        var file = try JSONDecoder().decode(ShowFile.self, from: Data(contentsOf: url))
+        guard !file.roles.isEmpty else { throw ShowFileError.noRoles }
+        file.showName = url.deletingPathExtension().lastPathComponent
+        let cast = Dictionary(config.roles.map { ($0.id, $0.selectedMemberId) }, uniquingKeysWith: { a, _ in a })
+        var c = config
+        c.showName = file.showName
+        c.roles = file.roles.map { role in
+            var r = role
+            if let sel = cast[r.id] ?? nil,
+               r.members.contains(where: { $0.id == sel }) || r.covers.contains(where: { $0.id == sel }) {
+                r.selectedMemberId = sel
+            }
+            return r
         }
+        c.prevVersionCommand = file.prevVersionCommand
+        c.nextVersionCommand = file.nextVersionCommand
+        c.currentShowPath = url.path
+        config = c
+        savedSnapshot = file
+        noteRecentShow(url)
     }
 
-    /// Loads a show from the library into the active config (auto-saved to config.json via onChange).
-    func loadShow(named name: String) {
-        let url = showsDir.appendingPathComponent(name + ".castpilot")
-        guard let data = try? Data(contentsOf: url),
-              var loaded = try? JSONDecoder().decode(AppConfig.self, from: data) else { return }
-        loaded.showName = name
-        self.config = loaded
-        migrateLegacySlots()
+    /// Writes the show — never machine settings or today's cast — to `url`.
+    /// The file name becomes the show name, so "Speichern unter" also renames.
+    func saveShow(to url: URL) throws {
+        var file = ShowFile(config: config)
+        file.showName = url.deletingPathExtension().lastPathComponent
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(file).write(to: url, options: .atomic)
+        config.showName = file.showName
+        config.currentShowPath = url.path
+        savedSnapshot = file
+        noteRecentShow(url)
     }
 
-    /// Deletes a show from the library.
-    func deleteShow(named name: String) {
-        let url = showsDir.appendingPathComponent(name + ".castpilot")
-        try? FileManager.default.removeItem(at: url)
-        refreshShows()
+    /// Replaces the show with the starter roles; machine settings and navigation stay.
+    func newShow() {
+        var c = config
+        c.showName = "Unbenannt"
+        c.roles = Self.defaultRoles()
+        c.currentShowPath = nil
+        config = c
+        savedSnapshot = ShowFile(config: config)   // untouched new show: no "save changes?" prompt
     }
 
-    /// Exports the current config to an arbitrary location (Finder save panel).
-    func exportShow(to url: URL) {
-        if let encoded = try? JSONEncoder().encode(config) {
-            try? encoded.write(to: url)
+    /// Reads the open show file at launch, so unsaved changes survive a restart as such.
+    private func loadSavedSnapshot() {
+        guard let url = showFileURL,
+              let data = try? Data(contentsOf: url),
+              var file = try? JSONDecoder().decode(ShowFile.self, from: data) else {
+            savedSnapshot = nil
+            return
         }
+        file.showName = url.deletingPathExtension().lastPathComponent
+        savedSnapshot = file
     }
 
-    /// Imports a show file: loads it into the active config and copies it into the library.
-    func importShow(from url: URL) {
-        guard let data = try? Data(contentsOf: url),
-              var loaded = try? JSONDecoder().decode(AppConfig.self, from: data) else { return }
-        // Fall back to the file's base name if the show carried no name.
-        if loaded.showName.trimmingCharacters(in: .whitespaces).isEmpty || loaded.showName == "Unbenannt" {
-            loaded.showName = url.deletingPathExtension().lastPathComponent
-        }
-        self.config = loaded
-        migrateLegacySlots()
-        saveShow()   // copy into library so it shows up in the dropdown
+    // MARK: Recent shows
+
+    private static let recentShowsKey = "recentShowPaths"
+
+    private func loadRecentShows() {
+        let paths = UserDefaults.standard.stringArray(forKey: Self.recentShowsKey) ?? []
+        recentShows = paths.map { URL(fileURLWithPath: $0) }
+    }
+
+    private func noteRecentShow(_ url: URL) {
+        var list = recentShows.filter { $0.standardizedFileURL != url.standardizedFileURL }
+        list.insert(url, at: 0)
+        recentShows = Array(list.prefix(10))
+        UserDefaults.standard.set(recentShows.map(\.path), forKey: Self.recentShowsKey)
+    }
+
+    func clearRecentShows() {
+        recentShows = []
+        UserDefaults.standard.removeObject(forKey: Self.recentShowsKey)
     }
 
     func setupMIDI() {
@@ -464,17 +584,22 @@ class MidiController: ObservableObject {
             self.config = loaded
             migrateLegacySlots()
         } else {
-            let defaultRoles = [
-                ("Aurora",  ["Aurora HS",  "Aurora TS"]),
-                ("Nova", ["Nova HS", "Nova TS"]),
-                ("Echo",   ["Echo HS",   "Echo TS"]),
-                ("Luna",  ["Luna HS",  "Luna TS"]),
-                ("Orion",  ["Orion HS",  "Orion TS"]),
-                ("Iris",  ["Iris HS",  "Iris TS"]),
-            ]
-            self.config = AppConfig(roles: defaultRoles.map { (roleName, trackNames) in
-                Role(name: roleName, tracks: trackNames.map { NuendoTrack(name: $0) })
-            })
+            self.config = AppConfig(roles: Self.defaultRoles())
+        }
+    }
+
+    /// Starter roles for a fresh install and for "Neue Show".
+    static func defaultRoles() -> [Role] {
+        let defaultRoles = [
+            ("Aurora",  ["Aurora HS",  "Aurora TS"]),
+            ("Nova", ["Nova HS", "Nova TS"]),
+            ("Echo",   ["Echo HS",   "Echo TS"]),
+            ("Luna",  ["Luna HS",  "Luna TS"]),
+            ("Orion",  ["Orion HS",  "Orion TS"]),
+            ("Iris",  ["Iris HS",  "Iris TS"]),
+        ]
+        return defaultRoles.map { (roleName, trackNames) in
+            Role(name: roleName, tracks: trackNames.map { NuendoTrack(name: $0) })
         }
     }
 
@@ -484,39 +609,9 @@ class MidiController: ObservableObject {
         }
     }
 
-    /// One-time migration: if a track has no slotAssignments populated but the legacy
-    /// slotOverrides + member.versionPosition data is present, build slotAssignments from it.
-    /// Two phases so overrides win over defaults — otherwise a default versionPosition can
-    /// stomp on another member's explicit override.
+    /// Normalizes legacy slot data in every role (see Role.migrateLegacySlots).
     private func migrateLegacySlots() {
-        for r in config.roles.indices {
-            let members = config.roles[r].members
-            for t in config.roles[r].tracks.indices {
-                var track = config.roles[r].tracks[t]
-                track.syncSlotAssignmentsToVersionCount()
-                let hasAnyAssignment = track.slotAssignments.contains(where: { $0 != nil })
-                if !hasAnyAssignment && !members.isEmpty {
-                    // Phase 1: explicit overrides claim their slots first.
-                    for member in members {
-                        if let slot = track.slotOverrides[member.id.uuidString],
-                           slot >= 1 && slot <= track.versionCount {
-                            track.slotAssignments[slot - 1] = member.id.uuidString
-                        }
-                    }
-                    // Phase 2: members without an override fill their versionPosition slot,
-                    // but only if it's still free (don't displace anyone).
-                    for member in members where track.slotOverrides[member.id.uuidString] == nil {
-                        let slot = member.versionPosition
-                        if slot >= 1 && slot <= track.versionCount && track.slotAssignments[slot - 1] == nil {
-                            track.slotAssignments[slot - 1] = member.id.uuidString
-                        }
-                    }
-                }
-                // Legacy data no longer needed after migration
-                track.slotOverrides = [:]
-                config.roles[r].tracks[t] = track
-            }
-        }
+        for r in config.roles.indices { config.roles[r].migrateLegacySlots() }
     }
 
     // Builds and fires the complete MIDI sequence for all selected cast members.
@@ -867,6 +962,7 @@ class UpdateChecker: ObservableObject {
 
 @main
 struct MidiCastSwitcherApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var midi = MidiController()
     @StateObject private var emailClient = IMAPClient()
     @StateObject private var updater = UpdateChecker()
@@ -875,10 +971,16 @@ struct MidiCastSwitcherApp: App {
         // Compact live window — stays on top of Nuendo
         WindowGroup("CastPilot Live", id: "live") {
             LiveView(midi: midi, emailClient: emailClient)
-                .onAppear { setupLiveWindow() }
+                .onAppear {
+                    setupLiveWindow()
+                    // Shows double-clicked in the Finder arrive via the app delegate.
+                    appDelegate.openShow = { url in ShowActions.open(url, midi) }
+                }
         }
         .windowResizability(.contentSize)
         .defaultSize(width: 280, height: 470)
+        .handlesExternalEvents(matching: [])   // opened files go to the delegate, not a new window
+        .commands { ShowCommands(midi: midi) }
 
         // Single show-editor window — Window (not WindowGroup) ensures only one instance
         Window("CastPilot – Show bearbeiten", id: "config") {
@@ -902,7 +1004,7 @@ struct MidiCastSwitcherApp: App {
     private func setupLiveWindow() {
         DispatchQueue.main.async {
             for window in NSApplication.shared.windows {
-                if window.title.contains("Live") {
+                if window.title == "CastPilot Live" {
                     window.level = .floating
                     window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
                     window.titlebarAppearsTransparent = true
@@ -911,6 +1013,153 @@ struct MidiCastSwitcherApp: App {
                     window.isMovableByWindowBackground = true
                 }
             }
+        }
+    }
+}
+
+/// Receives .castpilot files opened from the Finder (double-click, "Öffnen mit", Dock).
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set once the UI is up; files that arrive earlier (app launched by a double-click) wait.
+    var openShow: ((URL) -> Void)? {
+        didSet {
+            guard let openShow else { return }
+            pending.forEach(openShow)
+            pending.removeAll()
+        }
+    }
+    private var pending: [URL] = []
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.pathExtension.lowercased() == "castpilot" {
+            if let openShow { openShow(url) } else { pending.append(url) }
+        }
+    }
+}
+
+// MARK: - Show document actions (File menu, Finder)
+
+/// AppKit glue for the File menu: open/save panels, the "save changes?" prompt and error alerts.
+enum ShowActions {
+    static var showType: UTType { UTType(filenameExtension: "castpilot", conformingTo: .json) ?? .json }
+
+    /// Asks to save unsaved show changes first. Returns false when the user cancels.
+    static func confirmSaveIfNeeded(_ midi: MidiController) -> Bool {
+        guard midi.isShowModified else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Änderungen an „\(midi.config.showName)“ speichern?"
+        alert.informativeText = "Sonst gehen die Änderungen an Rollen, Tracks und Darstellern verloren."
+        alert.addButton(withTitle: "Speichern")
+        alert.addButton(withTitle: "Abbrechen")
+        alert.addButton(withTitle: "Nicht speichern")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return save(midi)
+        case .alertThirdButtonReturn: return true
+        default: return false
+        }
+    }
+
+    static func newShow(_ midi: MidiController) {
+        guard confirmSaveIfNeeded(midi) else { return }
+        midi.newShow()
+    }
+
+    static func openPanel(_ midi: MidiController) {
+        guard confirmSaveIfNeeded(midi) else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Show laden"
+        panel.directoryURL = midi.showsDir
+        panel.allowedContentTypes = [showType, .json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        load(url, midi)
+    }
+
+    /// Opens a show from "Zuletzt verwendet" or the Finder.
+    static func open(_ url: URL, _ midi: MidiController) {
+        guard confirmSaveIfNeeded(midi) else { return }
+        load(url, midi)
+    }
+
+    @discardableResult
+    static func save(_ midi: MidiController) -> Bool {
+        guard let url = midi.showFileURL else { return saveAs(midi) }
+        return write(url, midi)
+    }
+
+    @discardableResult
+    static func saveAs(_ midi: MidiController) -> Bool {
+        let panel = NSSavePanel()
+        panel.title = "Show speichern unter"
+        panel.nameFieldStringValue = midi.config.showName + ".castpilot"
+        panel.directoryURL = midi.showFileURL?.deletingLastPathComponent() ?? midi.showsDir
+        panel.allowedContentTypes = [showType]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        return write(url, midi)
+    }
+
+    static func revealInFinder(_ midi: MidiController) {
+        guard let url = midi.showFileURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private static func load(_ url: URL, _ midi: MidiController) {
+        do { try midi.openShow(at: url) } catch { showError("Show konnte nicht geladen werden", error) }
+    }
+
+    private static func write(_ url: URL, _ midi: MidiController) -> Bool {
+        do { try midi.saveShow(to: url); return true } catch {
+            showError("Show konnte nicht gespeichert werden", error)
+            return false
+        }
+    }
+
+    private static func showError(_ title: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
+    }
+}
+
+/// File menu: Neue Show, Show laden, Zuletzt verwendet, Show speichern (unter), Im Finder zeigen.
+/// Window menu: Live-Fenster (replaces File > New Live Window).
+struct ShowCommands: Commands {
+    @ObservedObject var midi: MidiController
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("Neue Show") { ShowActions.newShow(midi) }
+                .keyboardShortcut("n")
+            Button("Show laden …") { ShowActions.openPanel(midi) }
+                .keyboardShortcut("o")
+            Menu("Zuletzt verwendet") {
+                ForEach(midi.recentShows.filter { FileManager.default.fileExists(atPath: $0.path) }, id: \.self) { url in
+                    Button(url.deletingPathExtension().lastPathComponent) { ShowActions.open(url, midi) }
+                }
+                Divider()
+                Button("Liste löschen") { midi.clearRecentShows() }
+                    .disabled(midi.recentShows.isEmpty)
+            }
+        }
+        // After "new", not replacing .saveItem — that group also holds "Close" (⌘W).
+        CommandGroup(after: .newItem) {
+            Divider()
+            Button("Show speichern") { ShowActions.save(midi) }
+                .keyboardShortcut("s")
+            Button("Show speichern unter …") { ShowActions.saveAs(midi) }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+            Divider()
+            Button("Im Finder zeigen") { ShowActions.revealInFinder(midi) }
+                .disabled(midi.showFileURL == nil)
+        }
+        CommandGroup(before: .windowList) {
+            Button("Live-Fenster") { openWindow(id: "live") }
+                .keyboardShortcut("l")
+            Divider()
         }
     }
 }
@@ -1060,9 +1309,15 @@ struct LiveView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(.secondary)
                 if !midi.config.showName.isEmpty {
-                    Text(midi.config.showName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(midi.config.showName)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                        if midi.needsSave {
+                            Circle().fill(Color.orange).frame(width: 6, height: 6)
+                                .help("Show nicht gespeichert (⌘S)")
+                        }
+                    }
                 }
             }
             Spacer()
@@ -1303,7 +1558,6 @@ struct LiveView: View {
 struct ConfigView: View {
     @ObservedObject var midi: MidiController
     @State private var selectedRoleId: UUID? = nil
-    @State private var confirmDeleteShow = false
     @State private var roleToDelete: UUID? = nil
 
     var body: some View {
@@ -1329,8 +1583,9 @@ struct ConfigView: View {
             }
         }
         .frame(minWidth: 1080, minHeight: 580)
+        .navigationTitle(midi.config.showName)
+        .navigationSubtitle(midi.showFileURL == nil ? "Noch nicht gespeichert" : (midi.isShowModified ? "Nicht gespeichert" : ""))
         .onAppear {
-            midi.refreshShows()
             if selectedRoleId == nil { selectedRoleId = midi.config.roles.first?.id }
         }
         .onChange(of: midi.config) { midi.saveConfig() }
@@ -1386,54 +1641,34 @@ struct ConfigView: View {
         }
     }
 
-    // Show section — named full-config snapshots
+    // Show section — the open show file. Opening and saving live in the File menu.
     private var showSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             Text("Show")
                 .font(.headline)
-
-            FieldRow("Name") {
-                TextField("Show-Name", text: $midi.config.showName)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            FieldRow("Show laden") {
-                Picker("", selection: Binding<String>(
-                    get: { midi.availableShows.contains(midi.config.showName) ? midi.config.showName : "" },
-                    set: { newValue in if !newValue.isEmpty { midi.loadShow(named: newValue) } }
-                )) {
-                    Text("—").tag("")
-                    ForEach(midi.availableShows, id: \.self) { Text($0).tag($0) }
+            Text(midi.config.showName)
+                .font(UI.itemTitle)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            HStack(spacing: 5) {
+                if midi.needsSave {
+                    Circle().fill(Color.orange).frame(width: 6, height: 6)
                 }
-                .labelsHidden()
+                Text(showStatus)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-
-            HStack(spacing: 6) {
-                Button("Als Show sichern") { midi.saveShow() }
-                    .buttonStyle(.borderedProminent)
-                    .help("Legt die aktuelle Konfiguration unter diesem Namen in der Show-Bibliothek ab. Laufende Änderungen werden ohnehin automatisch gesichert.")
-                Menu {
-                    Button("Exportieren …") { exportShow() }
-                    Button("Importieren …") { importShow() }
-                    Divider()
-                    Button("Show löschen …", role: .destructive) { confirmDeleteShow = true }
-                        .disabled(!midi.availableShows.contains(midi.config.showName))
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Exportieren, Importieren, Löschen")
-                Spacer()
-            }
-            .controlSize(.small)
+            .help(midi.showFileURL?.path ?? "Mit ⌘S als Datei speichern")
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(UI.pad)
-        .confirmationDialog("Show „\(midi.config.showName)“ löschen?", isPresented: $confirmDeleteShow) {
-            Button("Löschen", role: .destructive) { midi.deleteShow(named: midi.config.showName) }
-            Button("Abbrechen", role: .cancel) { }
-        }
+    }
+
+    private var showStatus: String {
+        guard let url = midi.showFileURL else { return "Noch nicht gespeichert · ⌘S" }
+        return midi.isShowModified ? "Nicht gespeichert · ⌘S" : "Gespeichert · \(url.lastPathComponent)"
     }
 
     private func addRole() {
@@ -1445,29 +1680,6 @@ struct ConfigView: View {
     private func deleteRole(_ id: UUID) {
         if selectedRoleId == id { selectedRoleId = nil }
         midi.config.roles.removeAll { $0.id == id }
-    }
-
-    // MARK: - Show export / import (free files via Finder)
-
-    private func exportShow() {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = midi.config.showName + ".castpilot"
-        if let ct = UTType(filenameExtension: "castpilot") { panel.allowedContentTypes = [ct] }
-        if panel.runModal() == .OK, let url = panel.url {
-            midi.exportShow(to: url)
-        }
-    }
-
-    private func importShow() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        var types: [UTType] = [.json]
-        if let ct = UTType(filenameExtension: "castpilot") { types.insert(ct, at: 0) }
-        panel.allowedContentTypes = types
-        if panel.runModal() == .OK, let url = panel.url {
-            midi.importShow(from: url)
-        }
     }
 }
 

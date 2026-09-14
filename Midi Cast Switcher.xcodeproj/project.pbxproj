@@ -258,12 +258,13 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "CastPilot-Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.2.1;
+				MARKETING_VERSION = 2.3.0;
 				INFOPLIST_KEY_CFBundleDisplayName = CastPilot;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.janoslinde.Midi-Cast-Switcher";
 				PRODUCT_NAME = CastPilot;
@@ -292,12 +293,13 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "CastPilot-Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 2.2.1;
+				MARKETING_VERSION = 2.3.0;
 				INFOPLIST_KEY_CFBundleDisplayName = CastPilot;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.janoslinde.Midi-Cast-Switcher";
 				PRODUCT_NAME = CastPilot;

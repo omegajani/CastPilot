@@ -42,6 +42,7 @@ You don't need a global "ballet today" toggle, because these rules resolve corre
 - **Covers are orange.** When a cover is selected, the row turns orange and shows a **Cover** tag plus the resolved playback source (*via Sofia Ballett*). A ⚠ appears when several principals are absent, or when no playback is free.
 - **⊕ *Role*** shows when this role also sings the lines of a role that is *cut* today.
 - **An Nuendo senden (⌘↩)** fires the complete sequence. The status line underneath shows *Sende … → ✓ Gesendet 20:14 · 6/6 Rollen*. It warns **Besetzung geändert — noch nicht gesendet** if the cast changes after sending.
+- **Show name** in the header, with an orange dot while the show has unsaved changes.
 - **Header buttons.** ✉ imports today's cast from e-mail. The slider icon opens the show editor.
 
 ## Show editor
@@ -49,7 +50,7 @@ You don't need a global "ballet today" toggle, because these rules resolve corre
 It opens from the slider icon in the live window.
 
 - **Sidebar.**
-  - The **Show** block: name, *Show laden*, *Als Show sichern*, and a **…** menu with Export, Import and Delete.
+  - The **Show** block: the open show and whether it is saved (*Gespeichert · file* or *● Nicht gespeichert*). Opening and saving happen in the **File** menu, see [Shows](#shows-file-menu).
   - Below it the list of roles, with **+ / −**.
 - **Role header.** The role name, its **Stichwort** (the role name as it appears in the cast e-mail) and **Singt auch für** (use the Ballett variants when that role is *cut*).
 - **Tracks.** For each Nuendo track:
@@ -62,7 +63,26 @@ It opens from the slider icon in the live window.
 - **MIDI preview.** Select a performer to see the sequence that will be sent.
 - **Deleting.** Every list has a **+ / −** bar below it, and each row has **Löschen** in its context menu.
 
-All changes are saved to `config.json` automatically. **Als Show sichern** additionally stores a named snapshot (`.castpilot`) in the show library.
+## Shows (File menu)
+
+A show is a file (`.castpilot`), like a document. Opening and saving live in the **File** menu:
+
+| Menu item | Shortcut | What it does |
+|---|---|---|
+| Neue Show | ⌘N | starts a new show with starter roles |
+| Show laden … | ⌘O | opens a show file; the show folder is the default |
+| Zuletzt verwendet | | the last 10 shows |
+| Show speichern | ⌘S | saves to the open file; a new show asks for a name |
+| Show speichern unter … | ⇧⌘S | saves under a new name; the file name is the show name |
+| Im Finder zeigen | | reveals the file; copy or delete shows there |
+
+- **A show file contains** the roles, tracks, performers, covers, Ballett variants, e-mail keywords and the previous/next track-version commands.
+- **Each Mac keeps its own** MIDI output, e-mail account, timing and today's cast (in `config.json`). Opening a show from another machine never changes them, and changing the cast doesn't count as a change to the show.
+- **Unsaved changes** show an orange dot in the live window and the editor. CastPilot asks before another show replaces them. The working copy stays in `config.json`, so nothing is lost after a restart.
+- **Finder:** double-click a `.castpilot` file to open it. Show files from older versions open too.
+- **Show folder:** `~/Library/Application Support/MidiCastSwitcher/Shows/`
+
+> **Mixed versions:** CastPilot 2.2.1 and older read a new show file as a complete configuration and reset MIDI output, timing and e-mail server to their defaults. Update every machine to 2.3 before exchanging show files.
 
 ## Settings (⌘,)
 
@@ -78,7 +98,7 @@ All changes are saved to `config.json` automatically. **Als Show sichern** addit
 - **Send to Nuendo in one click.** It fires the complete MIDI sequence for all assigned roles and shows a status line afterwards.
 - **E-mail import.** It fetches the daily cast e-mail via IMAP and parses the role assignments. A confirmation view follows, with unmatched roles flagged in red.
 - **Auto-resolved covers.** Names are matched across roles, so Sofia-in-Aurora counts as Sofia being live in Echo even though the UUIDs differ.
-- **Show library.** Save, load, export and import complete show configurations (`.castpilot`).
+- **Show files.** Open, save and recent shows from the File menu; a double-click in the Finder opens a show.
 - **Virtual MIDI source.** It appears as *CastPilot Source* in Nuendo and Cubase. A hardware or Network MIDI output can be used instead.
 - **In-app update.** Go to Settings → Update → *Jetzt aktualisieren*.
 - **Debug trace.** `fireMidi` prints the resolved per-track logic and the complete MIDI schedule to the console.
@@ -92,10 +112,10 @@ All changes are saved to `config.json` automatically. **Als Show sichern** addit
 
 From **v1.9** onward CastPilot updates itself in-app (Settings → Update → *Jetzt aktualisieren*). You only need the Terminal command for the **first** install, or when migrating from a sandboxed build ≤ 1.8, which can't replace itself.
 
-The command downloads release **v2.2.1** of this branch and removes any old `Midi Cast Switcher.app`. It then installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
+The command downloads release **v2.3.0** of this branch and removes any old `Midi Cast Switcher.app`. It then installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
 
 ```bash
-curl -sL "$(curl -sL https://api.github.com/repos/omegajani/CastPilot/releases/tags/v2.2.1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
+curl -sL "$(curl -sL https://api.github.com/repos/omegajani/CastPilot/releases/tags/v2.3.0 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
 unzip -qo /tmp/MCS.zip -d /tmp/MCS && \
 rm -rf "/Applications/Midi Cast Switcher.app" "/Applications/CastPilot.app" && \
 mv "/tmp/MCS/CastPilot.app" /Applications/ && \
@@ -161,6 +181,13 @@ CastPilot can fetch the daily cast e-mail directly via IMAP:
 2. **Each show:** click the envelope icon in the live window. CastPilot fetches the newest e-mail with *"Cast Information"* in the subject, applies the recognised assignments and opens the verification window. Unrecognised roles are shown in red.
 
 The link between role and e-mail is the role's **Stichwort** in the show editor (e.g. `AURORA`, `NOVA`, `ECHO`).
+
+## What's new in 2.3
+
+- **Shows are documents:** *Show laden*, *Show speichern*, *Show speichern unter* and *Zuletzt verwendet* in the File menu, an orange dot for unsaved changes, a prompt before they are replaced, and double-click in the Finder.
+- **Show files contain only the show.** MIDI output, e-mail account, timing and today's cast stay on each Mac.
+- The editor's show block is reduced to the show name and its save status. New *Live-Fenster* item (⌘L) in the Window menu.
+- The MIDI output is unchanged. It was verified against 2.2.1.
 
 ## What's new in 2.2
 
