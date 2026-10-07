@@ -32,14 +32,14 @@ class UpdateChecker: ObservableObject {
     }
 
     var releasePageURL: URL {
-        // The releases list page — not /latest, which on GitHub resolves to the newest
-        // NON-prerelease (v1.6 on main) and would hide the feature/covers prereleases.
+        // The releases list page rather than /latest: the list is what we compare against,
+        // and it stays right even if a release is marked as a prerelease.
         URL(string: "https://github.com/\(Self.repoSlug)/releases")!
     }
 
     /// Fetches the releases list (incl. prereleases) and returns the highest-semver release.
-    /// We must NOT use /releases/latest — GitHub returns only the newest non-prerelease there,
-    /// which is v1.6 on main, so the feature/covers prereleases would never be seen.
+    /// Deliberately not /releases/latest: that one skips prereleases, so a version published
+    /// as a prerelease would never be offered. Comparing the whole list cannot miss one.
     private func bestRelease() async throws -> (tag: String, zipURL: URL?)? {
         let url = URL(string: "https://api.github.com/repos/\(Self.repoSlug)/releases?per_page=30")!
         var req = URLRequest(url: url)
