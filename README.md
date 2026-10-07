@@ -1,6 +1,6 @@
-# CastPilot · `feature/covers` branch
+# CastPilot
 
-> ⚠️ **Experimental branch.** This is the development version with ballet-cover and track-variant support. For the stable release without these features, switch to the [`main`](https://github.com/omegajani/CastPilot/tree/main) branch.
+> **Branches:** `main` holds the app, with every feature in it. There is no reduced variant. Work in progress lives on short-lived branches that are merged back into `main` — see [Development](#development).
 
 > **Names:** formerly *Midi Cast Switcher (MCS)*. The app has been called **CastPilot** (`CastPilot.app`) since v2.0, and since v2.2 the GitHub repo is **`omegajani/CastPilot`** too. Old `Midi-Cast-Switcher` links redirect automatically. The bundle ID and the config location (`~/Library/Application Support/MidiCastSwitcher/`) are unchanged, so existing configs and show files keep working.
 > Since v2.1.3 the virtual MIDI source is called **CastPilot Source**. Re-select it once in Nuendo's Generic Remote on every machine.
@@ -18,7 +18,7 @@ A compact macOS utility for live shows. It automates Nuendo track version switch
 
 In live shows running with Nuendo, each role (e.g. *NOVA*, *AURORA*, *ECHO*) has several performers, each recorded on a separate **Track Version**. The cast changes every day. CastPilot sends the exact MIDI sequence needed to select each track and move to the right version, all in one click.
 
-On top of the basic principal-per-slot mapping, this branch adds two related concepts.
+On top of the basic principal-per-slot mapping, CastPilot adds two related concepts.
 
 ### Cover (ballet doubles)
 
@@ -113,7 +113,7 @@ A show is a file (`.castpilot`), like a document. Opening and saving live in the
 
 From **v1.9** onward CastPilot updates itself in-app (Settings → Update → *Jetzt aktualisieren*). You only need the Terminal command for the **first** install, or when migrating from a sandboxed build ≤ 1.8, which can't replace itself.
 
-The command downloads release **v2.3.1** of this branch and removes any old `Midi Cast Switcher.app`. It then installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
+The command downloads release **v2.3.1** and removes any old `Midi Cast Switcher.app`. It then installs `CastPilot.app` and copies the example `config.json` only if none exists yet:
 
 ```bash
 curl -sL "$(curl -sL https://api.github.com/repos/omegajani/CastPilot/releases/tags/v2.3.1 | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['assets'][0]['browser_download_url'])")" -o /tmp/MCS.zip && \
@@ -128,14 +128,14 @@ rm -rf /tmp/MCS /tmp/MCS.zip && \
 open "/Applications/CastPilot.app"
 ```
 
-> **Note:** This branch is published as pre-releases on GitHub, so `releases/latest` resolves to the stable v1.6 on `main`. That is why the script targets the tag explicitly.
+> **Note:** The script asks for the tag explicitly, so it installs exactly the version named here rather than whatever is newest.
 
 > **Config location:** Since v1.9 the sandbox is off, so the config lives at `~/Library/Application Support/MidiCastSwitcher/config.json`. When you upgrade from an older sandboxed build, the config is migrated out of the old container on first launch.
 
 ## Building from source
 
 ```bash
-git clone -b feature/covers https://github.com/omegajani/CastPilot.git
+git clone https://github.com/omegajani/CastPilot.git
 cd CastPilot
 open "Midi Cast Switcher.xcodeproj"
 # Cmd+R in Xcode
@@ -146,6 +146,14 @@ To build from the command line:
 ```bash
 xcodebuild -project "Midi Cast Switcher.xcodeproj" -scheme "Midi Cast Switcher" -configuration Release -derivedDataPath build build
 ```
+
+## Development
+
+- **`main` is the app.** It always holds the current version with all features. Releases are tagged on `main`.
+- **New work gets a short-lived branch** (`feature/nuendo-feedback`), is merged back into `main` and is then deleted. Nothing is kept on a branch permanently — a second long-lived line would have to be kept in step by hand.
+- **`feature/covers`** was that long-lived line until October 2026 and now points at the same commit as `main`. It stays only so that links in older releases keep working.
+- **[`v1.6-legacy`](https://github.com/omegajani/CastPilot/releases/tag/v1.6-legacy)** is the last state before CastPilot 2.x, when `main` still carried Midi Cast Switcher 1.6.
+- **The source is split by topic** — `Models`, `MidiController`, `UpdateChecker`, `App`, `DesignSystem`, `LiveView`, `ShowEditorView`, `SettingsView`, `EmailImport`. The Xcode group is file-system-synchronized, so a new `.swift` file in `Midi Cast Switcher/` is picked up without touching the project.
 
 ## Configuring covers
 
