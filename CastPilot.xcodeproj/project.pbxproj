@@ -7,13 +7,13 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		04E665212F6FE44E0062C012 /* Midi Cast Switcher.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Midi Cast Switcher.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		04E665212F6FE44E0062C012 /* CastPilot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "CastPilot.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		04E665232F6FE44E0062C012 /* Midi Cast Switcher */ = {
+		04E665232F6FE44E0062C012 /* CastPilot */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "Midi Cast Switcher";
+			path = "CastPilot";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -32,7 +32,7 @@
 		04E665182F6FE44E0062C012 = {
 			isa = PBXGroup;
 			children = (
-				04E665232F6FE44E0062C012 /* Midi Cast Switcher */,
+				04E665232F6FE44E0062C012 /* CastPilot */,
 				04E665222F6FE44E0062C012 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -40,7 +40,7 @@
 		04E665222F6FE44E0062C012 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				04E665212F6FE44E0062C012 /* Midi Cast Switcher.app */,
+				04E665212F6FE44E0062C012 /* CastPilot.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,9 +48,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		04E665202F6FE44E0062C012 /* Midi Cast Switcher */ = {
+		04E665202F6FE44E0062C012 /* CastPilot */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 04E6652C2F6FE44F0062C012 /* Build configuration list for PBXNativeTarget "Midi Cast Switcher" */;
+			buildConfigurationList = 04E6652C2F6FE44F0062C012 /* Build configuration list for PBXNativeTarget "CastPilot" */;
 			buildPhases = (
 				04E6651D2F6FE44E0062C012 /* Sources */,
 				04E6651E2F6FE44E0062C012 /* Frameworks */,
@@ -61,13 +61,13 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				04E665232F6FE44E0062C012 /* Midi Cast Switcher */,
+				04E665232F6FE44E0062C012 /* CastPilot */,
 			);
-			name = "Midi Cast Switcher";
+			name = "CastPilot";
 			packageProductDependencies = (
 			);
-			productName = "Midi Cast Switcher";
-			productReference = 04E665212F6FE44E0062C012 /* Midi Cast Switcher.app */;
+			productName = "CastPilot";
+			productReference = 04E665212F6FE44E0062C012 /* CastPilot.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -85,7 +85,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 04E6651C2F6FE44E0062C012 /* Build configuration list for PBXProject "Midi Cast Switcher" */;
+			buildConfigurationList = 04E6651C2F6FE44E0062C012 /* Build configuration list for PBXProject "CastPilot" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -99,7 +99,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				04E665202F6FE44E0062C012 /* Midi Cast Switcher */,
+				04E665202F6FE44E0062C012 /* CastPilot */,
 			);
 		};
 /* End PBXProject section */
@@ -254,7 +254,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
-				CODE_SIGN_ENTITLEMENTS = "Midi Cast Switcher/Midi Cast Switcher.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "CastPilot/CastPilot.entitlements";
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -289,7 +289,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
-				CODE_SIGN_ENTITLEMENTS = "Midi Cast Switcher/Midi Cast Switcher.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "CastPilot/CastPilot.entitlements";
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -316,7 +316,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		04E6651C2F6FE44E0062C012 /* Build configuration list for PBXProject "Midi Cast Switcher" */ = {
+		04E6651C2F6FE44E0062C012 /* Build configuration list for PBXProject "CastPilot" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				04E6652A2F6FE44F0062C012 /* Debug */,
@@ -325,7 +325,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		04E6652C2F6FE44F0062C012 /* Build configuration list for PBXNativeTarget "Midi Cast Switcher" */ = {
+		04E6652C2F6FE44F0062C012 /* Build configuration list for PBXNativeTarget "CastPilot" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				04E6652D2F6FE44F0062C012 /* Debug */,
