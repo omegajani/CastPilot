@@ -10,6 +10,7 @@ import AppKit
 
 struct ConfigView: View {
     @ObservedObject var midi: MidiController
+    @ObservedObject var digico: DigicoMonitor
     @State private var selectedRoleId: UUID? = nil
     @State private var roleToDelete: UUID? = nil
 
@@ -19,7 +20,9 @@ struct ConfigView: View {
                 .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 360)
         } detail: {
             if let idx = midi.config.roles.firstIndex(where: { $0.id == selectedRoleId }) {
-                RoleDetailView(role: $midi.config.roles[idx], allRoles: midi.config.roles)
+                RoleDetailView(role: $midi.config.roles[idx], allRoles: midi.config.roles,
+                               digicoEnabled: midi.config.digicoCheckEnabled,
+                               digicoPlayers: digico.snapshot?.players(onChannels: midi.config.roles[idx].digicoChannels) ?? [])
                     .id(selectedRoleId)   // fresh list selections per role
             } else {
                 ContentUnavailableView("Keine Rolle ausgewählt",
@@ -141,9 +144,15 @@ struct ConfigView: View {
 struct RoleDetailView: View {
     @Binding var role: Role
     var allRoles: [Role] = []
+    /// Console check switched on (Settings → DiGiCo); hides the DiGiCo fields when off.
+    var digicoEnabled = false
+    /// Players the console lists on this role's channels (from the DiGiCo-Bridge).
+    var digicoPlayers: [String] = []
     @State private var selectedTrackId: UUID? = nil
     @State private var selectedMemberId: UUID? = nil
     @State private var selectedCoverId: UUID? = nil
+    /// Kept as typed, so "1, " doesn't get reformatted mid-entry.
+    @State private var channelText = ""
 
     private let trackW: CGFloat = 480
     private let memberMinW: CGFloat = 280
@@ -227,10 +236,51 @@ struct RoleDetailView: View {
             }
             .help("Ist die gewählte Rolle heute „cut“, nutzt diese Rolle die Ballett-Varianten mit dem kombinierten Playback.")
 
+            if digicoEnabled {
+                FieldRow("DiGiCo-Kanäle", labelWidth: nil) {
+                    TextField("z. B. 1, 7", text: $channelText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                }
+                .help("Eingangskanäle dieser Rolle am DiGiCo-Pult, z. B. 1, 7 für TS und HH. Leer: keine Pultprüfung.")
+            }
+
             Spacer(minLength: 0)
         }
         .padding(.horizontal, UI.pad)
         .padding(.vertical, 10)
+        .onAppear { channelText = role.digicoChannels.map(String.init).joined(separator: ", ") }
+        .onChange(of: channelText) { role.digicoChannels = Self.parseChannels(channelText) }
+    }
+
+    /// "1, 7" / "1 7" / "1;7" → [1, 7]. Keeps the order, drops duplicates and non-channels.
+    static func parseChannels(_ text: String) -> [Int] {
+        var seen = Set<Int>()
+        return text.split(whereSeparator: { !$0.isNumber })
+            .compactMap { Int($0) }
+            .filter { (1...256).contains($0) && seen.insert($0).inserted }
+    }
+
+    /// Caption menu "Pult: …" that pins a performer or cover to a console player.
+    /// `autoLabel` is what "automatisch" resolves to right now.
+    private func digicoPlayerMenu(_ selection: Binding<String?>, autoLabel: String?) -> some View {
+        let notFound = selection.wrappedValue == nil && autoLabel == nil && !digicoPlayers.isEmpty
+        return Menu {
+            Button(autoLabel.map { "Automatisch (\($0))" } ?? "Automatisch") { selection.wrappedValue = nil }
+            if !digicoPlayers.isEmpty {
+                Divider()
+                ForEach(digicoPlayers, id: \.self) { player in
+                    Button(player) { selection.wrappedValue = player }
+                }
+            }
+        } label: {
+            Text("Pult: " + (selection.wrappedValue ?? autoLabel ?? (notFound ? "kein Player gefunden" : "automatisch")))
+                .font(.caption)
+                .foregroundColor(notFound ? .orange : .secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Player dieser Person am DiGiCo-Pult. Automatisch: Name oder Vorname passt zu genau einem Player.")
     }
 
     // MARK: Tracks
@@ -414,6 +464,11 @@ struct RoleDetailView: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
+
+            if digicoEnabled && !role.digicoChannels.isEmpty && !isVariant {
+                digicoPlayerMenu(memberBinding(member.id).digicoPlayer,
+                                 autoLabel: DigicoCheck.matchPlayer(member.name, in: digicoPlayers))
+            }
         }
         .padding(.vertical, 2)
     }
@@ -436,6 +491,9 @@ struct RoleDetailView: View {
                 }
                 .labelsHidden()
                 .frame(width: 180, alignment: .leading)
+            }
+            if digicoEnabled && !role.digicoChannels.isEmpty {
+                digicoPlayerMenu(cover.digicoPlayer, autoLabel: "wie Playback")
             }
         }
         .padding(.vertical, 2)

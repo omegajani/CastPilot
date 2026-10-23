@@ -17,6 +17,13 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>CastPilot liest von der DiGiCo-Bridge im Haus-Netz, welche Player am Pult geladen sind.</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

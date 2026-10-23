@@ -121,16 +121,19 @@ struct CastMember: Codable, Identifiable, Equatable {
     var name: String = "Neuer Darsteller"
     var versionPosition: Int = 1
     var coverVariantOf: UUID? = nil
+    /// The DiGiCo Theatre player of this performer on the console. nil → matched by name.
+    var digicoPlayer: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, name, versionPosition, coverVariantOf
+        case id, name, versionPosition, coverVariantOf, digicoPlayer
     }
 
     init(id: UUID = UUID(), name: String = "Neuer Darsteller",
-         versionPosition: Int = 1, coverVariantOf: UUID? = nil) {
+         versionPosition: Int = 1, coverVariantOf: UUID? = nil, digicoPlayer: String? = nil) {
         self.id = id; self.name = name
         self.versionPosition = versionPosition
         self.coverVariantOf = coverVariantOf
+        self.digicoPlayer = digicoPlayer
     }
 
     init(from decoder: Decoder) throws {
@@ -139,6 +142,7 @@ struct CastMember: Codable, Identifiable, Equatable {
         name            = (try? c.decodeIfPresent(String.self, forKey: .name))            ?? "Neuer Darsteller"
         versionPosition = (try? c.decodeIfPresent(Int.self,    forKey: .versionPosition)) ?? 1
         coverVariantOf  = try? c.decodeIfPresent(UUID.self,    forKey: .coverVariantOf)
+        digicoPlayer    = try? c.decodeIfPresent(String.self,  forKey: .digicoPlayer)
     }
 }
 
@@ -150,6 +154,9 @@ struct Cover: Codable, Identifiable, Equatable {
     /// nil → dynamic: at fire time, pick the principal not selected anywhere.
     /// non-nil → fixed: always use this principal's slot for this cover.
     var fixedSourceMemberId: UUID? = nil
+    /// The DiGiCo player to expect when this cover plays. nil → the player of the
+    /// principal whose playback is used.
+    var digicoPlayer: String? = nil
 }
 
 struct Role: Codable, Identifiable, Equatable {
@@ -163,19 +170,22 @@ struct Role: Codable, Identifiable, Equatable {
     /// When set, this role sings the lines of the linked role whenever that role is "cut".
     /// In that case the Ballett-variant track versions are preferred (they contain the combined playback).
     var borrowsLinesFromRoleId: UUID? = nil
+    /// Console input channels of this role (e.g. [1, 7] for TS and HH). Empty → not checked.
+    var digicoChannels: [Int] = []
 
     enum CodingKeys: String, CodingKey {
-        case id, name, emailKeyword, tracks, members, covers, selectedMemberId, borrowsLinesFromRoleId
+        case id, name, emailKeyword, tracks, members, covers, selectedMemberId, borrowsLinesFromRoleId, digicoChannels
     }
 
     init(id: UUID = UUID(), name: String = "Neue Rolle", emailKeyword: String = "",
          tracks: [NuendoTrack] = [], members: [CastMember] = [],
          covers: [Cover] = [], selectedMemberId: UUID? = nil,
-         borrowsLinesFromRoleId: UUID? = nil) {
+         borrowsLinesFromRoleId: UUID? = nil, digicoChannels: [Int] = []) {
         self.id = id; self.name = name; self.emailKeyword = emailKeyword
         self.tracks = tracks; self.members = members
         self.covers = covers; self.selectedMemberId = selectedMemberId
         self.borrowsLinesFromRoleId = borrowsLinesFromRoleId
+        self.digicoChannels = digicoChannels
     }
 
     init(from decoder: Decoder) throws {
@@ -188,6 +198,7 @@ struct Role: Codable, Identifiable, Equatable {
         covers         = (try? c.decodeIfPresent([Cover].self,       forKey: .covers))         ?? []
         selectedMemberId      = try? c.decodeIfPresent(UUID.self, forKey: .selectedMemberId)
         borrowsLinesFromRoleId = try? c.decodeIfPresent(UUID.self, forKey: .borrowsLinesFromRoleId)
+        digicoChannels = (try? c.decodeIfPresent([Int].self, forKey: .digicoChannels)) ?? []
     }
 
     /// Returns true when the role this role borrows lines from currently has "cut" selected.
@@ -265,9 +276,16 @@ struct AppConfig: Codable, Equatable {
     var showName: String = "Unbenannt"
     /// Path of the open .castpilot show file; nil until the show is saved to a file.
     var currentShowPath: String? = nil
+    /// Console check on/off (Settings → DiGiCo). Off by default; per Mac.
+    var digicoCheckEnabled: Bool = false
+    /// Address of the DiGiCo-Bridge on this Mac's network (e.g. "10.10.100.20:8790").
+    var digicoBridgeURL: String = ""
+
+    /// The bridge address to poll, or "" when the check is switched off.
+    var activeDigicoBridge: String { digicoCheckEnabled ? digicoBridgeURL : "" }
 
     enum CodingKeys: String, CodingKey {
-        case delayMs, interRoleDelayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName, showName, currentShowPath
+        case delayMs, interRoleDelayMs, prevVersionCommand, nextVersionCommand, roles, emailConfig, midiOutputName, showName, currentShowPath, digicoCheckEnabled, digicoBridgeURL
     }
 
     init(delayMs: Int = 100,
@@ -275,7 +293,8 @@ struct AppConfig: Codable, Equatable {
          prevVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127),
          nextVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 2, value2: 127),
          roles: [Role] = [], emailConfig: EmailConfig = EmailConfig(), midiOutputName: String = "",
-         showName: String = "Unbenannt", currentShowPath: String? = nil) {
+         showName: String = "Unbenannt", currentShowPath: String? = nil,
+         digicoCheckEnabled: Bool = false, digicoBridgeURL: String = "") {
         self.delayMs = delayMs
         self.interRoleDelayMs = interRoleDelayMs
         self.prevVersionCommand = prevVersionCommand
@@ -285,6 +304,8 @@ struct AppConfig: Codable, Equatable {
         self.midiOutputName = midiOutputName
         self.showName = showName
         self.currentShowPath = currentShowPath
+        self.digicoCheckEnabled = digicoCheckEnabled
+        self.digicoBridgeURL = digicoBridgeURL
     }
 
     init(from decoder: Decoder) throws {
@@ -298,6 +319,8 @@ struct AppConfig: Codable, Equatable {
         midiOutputName     = (try? c.decodeIfPresent(String.self,       forKey: .midiOutputName))     ?? ""
         showName           = (try? c.decodeIfPresent(String.self,       forKey: .showName))           ?? "Unbenannt"
         currentShowPath    = (try? c.decodeIfPresent(String.self,       forKey: .currentShowPath))    ?? nil
+        digicoCheckEnabled = (try? c.decodeIfPresent(Bool.self,         forKey: .digicoCheckEnabled)) ?? false
+        digicoBridgeURL    = (try? c.decodeIfPresent(String.self,       forKey: .digicoBridgeURL))    ?? ""
     }
 }
 
@@ -307,7 +330,8 @@ struct AppConfig: Codable, Equatable {
 /// (MIDI output, e-mail account, timing) or today's cast. The keys match AppConfig, so
 /// show files written by older versions (a complete AppConfig) open unchanged.
 struct ShowFile: Codable, Equatable {
-    var formatVersion: Int = 2
+    /// 3: roles carry DiGiCo channels and performers their console player (ignored by 2.3).
+    var formatVersion: Int = 3
     var showName: String = "Unbenannt"
     var roles: [Role] = []
     var prevVersionCommand: MidiCommand = MidiCommand(type: .cc, channel: 1, value1: 1, value2: 127)

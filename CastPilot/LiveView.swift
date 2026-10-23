@@ -11,14 +11,22 @@ import AppKit
 struct LiveView: View {
     @ObservedObject var midi: MidiController
     @ObservedObject var emailClient: IMAPClient
+    @ObservedObject var digico: DigicoMonitor
     @State private var fireScale: CGFloat = 1.0
     @Environment(\.openWindow) private var openWindow
     @AppStorage(LiveWindow.onTopKey) private var liveWindowOnTop = true
 
     private let nameW: CGFloat = 52
+    /// Width of one check column at the right of the role rows ("Pult", later "Nuendo").
+    private let checkColW: CGFloat = 34
 
     private var hasAssignment: Bool {
         midi.config.roles.contains { $0.selectedMemberId != nil }
+    }
+
+    /// Titles of the check columns shown right now, in display order.
+    private var checkColumns: [String] {
+        digico.isEnabled ? ["Pult"] : []
     }
 
     var body: some View {
@@ -30,6 +38,7 @@ struct LiveView: View {
             // Role rows
             ScrollView {
                 VStack(spacing: 4) {
+                    if !checkColumns.isEmpty { checkColumnHeader }
                     ForEach($midi.config.roles) { $role in
                         roleRow($role)
                     }
@@ -44,6 +53,40 @@ struct LiveView: View {
         .frame(minWidth: 240, idealWidth: 280, maxWidth: 400)
         .onChange(of: midi.config) { midi.saveConfig() }
         .onChange(of: liveWindowOnTop) { LiveWindow.applyLevel() }
+        .task(id: midi.config.activeDigicoBridge) { digico.configure(address: midi.config.activeDigicoBridge) }
+    }
+
+    /// Small titles above the check columns, aligned with the badges in the role rows.
+    private var checkColumnHeader: some View {
+        HStack(spacing: 0) {
+            Spacer()
+            ForEach(checkColumns, id: \.self) { title in
+                Text(title)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .frame(width: checkColW)
+            }
+        }
+        .padding(.horizontal, 18)   // = row padding (10) + outer padding (8)
+        .padding(.bottom, -2)
+    }
+
+    /// "Ch 7: Mira Lang" or, when several channels carry the same wrong player,
+    /// "Ch 1+7: Sofia Brandt".
+    static func wrongChannelsText(_ loaded: [Int: String]) -> String {
+        let byPlayer = Dictionary(grouping: loaded.keys.sorted(), by: { loaded[$0]! })
+        return byPlayer
+            .sorted { $0.value.first! < $1.value.first! }
+            .map { player, chs in "Ch \(chs.map(String.init).joined(separator: "+")): \(player)" }
+            .joined(separator: " · ")
+    }
+
+    /// The console check for a role; nil when DiGiCo is off or the role has no channels.
+    /// Stale data never shows a green tick.
+    private func digicoStatus(_ role: Role) -> DigicoStatus? {
+        guard digico.isEnabled else { return nil }
+        return DigicoCheck.status(of: role, allRoles: midi.config.roles,
+                                  snapshot: digico.isStale ? nil : digico.snapshot)
     }
 
     // MARK: Header
@@ -114,6 +157,7 @@ struct LiveView: View {
     private func roleRow(_ role: Binding<Role>) -> some View {
         let r = role.wrappedValue
         let coverSelected = r.selectedMemberId.map { id in r.covers.contains { $0.id == id } } ?? false
+        let consoleStatus = digicoStatus(r)
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
                 Text(r.name)
@@ -122,6 +166,28 @@ struct LiveView: View {
                     .frame(width: nameW, alignment: .leading)
                     .lineLimit(1)
                 castMenu(role)
+                // One fixed-width column per check, so ticks line up under their title.
+                if digico.isEnabled {
+                    Group {
+                        if let consoleStatus { DigicoBadge(status: consoleStatus) } else { Color.clear }
+                    }
+                    .frame(width: checkColW)
+                    .padding(.leading, -8)   // the HStack spacing already separates it
+                }
+            }
+
+            // A wrong player on the console is the one thing to see at a glance.
+            // Always name the channels, so a half-fixed role (TS right, HH wrong) is visible.
+            if case .mismatch(_, let loaded)? = consoleStatus {
+                subLine {
+                    Group {
+                        Image(systemName: "xmark.octagon.fill")
+                        Text("Pult · " + Self.wrongChannelsText(loaded))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .foregroundColor(.red)
+                }
             }
 
             // Sub-label when a cover is selected: show the resolved playback source,
@@ -252,8 +318,37 @@ struct LiveView: View {
             .help("Besetzung an Nuendo senden (⌘↩)")
 
             sendStatusLine
+            digicoStatusLine
         }
         .padding(10)
+    }
+
+    /// Summary of the console check under the send status. Hidden while DiGiCo is off.
+    @ViewBuilder
+    private var digicoStatusLine: some View {
+        if digico.isEnabled {
+            let statuses = midi.config.roles.compactMap(digicoStatus)
+            let checked = statuses.filter { if case .skipped = $0 { return false } else { return true } }
+            let ok = checked.filter { if case .ok = $0 { return true } else { return false } }.count
+            let wrong = checked.filter { if case .mismatch = $0 { return true } else { return false } }.count
+            let time = (digico.snapshot?.readDate ?? digico.lastSuccess)?
+                .formatted(date: .omitted, time: .shortened) ?? ""
+            if digico.isStale {
+                statusText(digico.lastError ?? "Warte auf Pultdaten …",
+                           icon: "antenna.radiowaves.left.and.right.slash", tint: .orange)
+            } else if checked.isEmpty {
+                statusText("Pult \(time) · keine Rolle zu prüfen", icon: "minus.circle")
+            } else if wrong > 0 {
+                statusText("Pult \(time) · \(wrong) \(wrong == 1 ? "Rolle" : "Rollen") falsch geladen",
+                           icon: "xmark.octagon.fill", tint: .red)
+            } else if ok == checked.count {
+                statusText("Pult \(time) · \(ok)/\(checked.count) Rollen richtig",
+                           icon: "checkmark.circle.fill", tint: .green)
+            } else {
+                statusText("Pult \(time) · \(ok)/\(checked.count) geprüft, Rest unklar",
+                           icon: "questionmark.circle", tint: .orange)
+            }
+        }
     }
 
     private func send() {

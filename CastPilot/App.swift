@@ -15,11 +15,12 @@ struct MidiCastSwitcherApp: App {
     @StateObject private var midi = MidiController()
     @StateObject private var emailClient = IMAPClient()
     @StateObject private var updater = UpdateChecker()
+    @StateObject private var digico = DigicoMonitor()
 
     var body: some Scene {
         // Compact live window — stays on top of Nuendo
         WindowGroup("CastPilot Live", id: "live") {
-            LiveView(midi: midi, emailClient: emailClient)
+            LiveView(midi: midi, emailClient: emailClient, digico: digico)
                 .onAppear {
                     setupLiveWindow()
                     // Shows double-clicked in the Finder arrive via the app delegate.
@@ -33,7 +34,7 @@ struct MidiCastSwitcherApp: App {
 
         // Single show-editor window — Window (not WindowGroup) ensures only one instance
         Window("CastPilot – Show bearbeiten", id: "config") {
-            ConfigView(midi: midi)
+            ConfigView(midi: midi, digico: digico)
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1200, height: 680)
@@ -46,7 +47,7 @@ struct MidiCastSwitcherApp: App {
 
         // App-wide settings (⌘,): MIDI output & navigation, e-mail account, updates
         Settings {
-            SettingsView(midi: midi, updater: updater)
+            SettingsView(midi: midi, updater: updater, digico: digico)
         }
     }
 

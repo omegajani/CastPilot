@@ -11,6 +11,7 @@ import AppKit
 struct SettingsView: View {
     @ObservedObject var midi: MidiController
     @ObservedObject var updater: UpdateChecker
+    @ObservedObject var digico: DigicoMonitor
 
     var body: some View {
         TabView {
@@ -20,6 +21,8 @@ struct SettingsView: View {
                 .tabItem { Label("MIDI", systemImage: "pianokeys") }
             EmailSettingsTab(midi: midi)
                 .tabItem { Label("E-Mail", systemImage: "envelope") }
+            DigicoSettingsTab(midi: midi, digico: digico)
+                .tabItem { Label("DiGiCo", systemImage: "slider.vertical.3") }
             UpdateSettingsTab(updater: updater)
                 .tabItem { Label("Update", systemImage: "arrow.down.circle") }
         }
@@ -134,6 +137,62 @@ struct EmailSettingsTab: View {
         }
         .formStyle(.grouped)
         .onAppear { password = keychainLoad(account: midi.config.emailConfig.username) ?? "" }
+    }
+}
+
+struct DigicoSettingsTab: View {
+    @ObservedObject var midi: MidiController
+    @ObservedObject var digico: DigicoMonitor
+    @State private var address = ""
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Pultprüfung einschalten", isOn: Binding(
+                    get: { midi.config.digicoCheckEnabled },
+                    set: { midi.config.digicoCheckEnabled = $0; digico.configure(address: midi.config.activeDigicoBridge) }
+                ))
+                HStack {
+                    TextField("Bridge-Adresse", text: $address, prompt: Text("10.10.100.20:8799"))
+                        .onSubmit(apply)
+                    Button("Übernehmen", action: apply)
+                        .disabled(address == midi.config.digicoBridgeURL)
+                }
+                .disabled(!midi.config.digicoCheckEnabled)
+            } header: {
+                Text("DiGiCo-Pultprüfung")
+            } footer: {
+                Text("Zeigt im Live-Fenster in der Spalte „Pult“, ob am DiGiCo-Pult die Player der heutigen Besetzung geladen sind. Die Bridge läuft auf dem Mac mit der DiGiCo-Remote. CastPilot liest nur und schickt nie etwas ans Pult. Gilt nur für diesen Mac.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if digico.isEnabled {
+                Section("Status") {
+                    LabeledContent("Verbindung") {
+                        if digico.isStale {
+                            Label(digico.lastError ?? "Warte auf Daten …", systemImage: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                        } else {
+                            Label("Verbunden", systemImage: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                        }
+                    }
+                    if let snap = digico.snapshot {
+                        LabeledContent("Session") { Text(snap.session) }
+                        LabeledContent("Quelle") { Text(snap.source) }
+                        LabeledContent("Kanäle mit Playern") { Text("\(snap.channels.count)") }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear { address = midi.config.digicoBridgeURL }
+    }
+
+    private func apply() {
+        midi.config.digicoBridgeURL = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        digico.configure(address: midi.config.activeDigicoBridge)
     }
 }
 
