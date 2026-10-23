@@ -191,6 +191,16 @@ CastPilot can fetch the daily cast e-mail directly via IMAP:
 
 The link between role and e-mail is the role's **Stichwort** in the show editor (e.g. `AURORA`, `NOVA`, `ECHO`).
 
+## Console check (DiGiCo)
+
+Optional, off by default. It shows whether the DiGiCo Theatre players loaded on the console match today's cast.
+
+1. **Bridge:** run the DiGiCo-Bridge on the Mac with the DiGiCo remote software, see [`Tools/DigicoBridge`](Tools/DigicoBridge/README.md). It reads the loaded players live and never writes to the console.
+2. **Settings (⌘,) → DiGiCo:** switch on *Pultprüfung einschalten* and enter the bridge address. Per Mac.
+3. **Show editor:** give each role its console channels under **DiGiCo-Kanäle** (e.g. `1, 7` for TS and HH). Performers are matched to console players by name (*Mira* → *Mira Lang*); *Pult: …* under a performer or cover pins a player by hand.
+
+The live window then gets a **Pult** column with one tick per role: ✓ right player on every channel, ✗ with a red line naming the wrong channels (*Pult · Ch 2+8: …*), ? when the check can't decide, – when the role is cut or not cast. A cover expects the player whose playback CastPilot uses. Stale data never shows a tick. CastPilot polls the bridge every 2 s with GET requests only; the MIDI output is unchanged.
+
 ## What's new in 2.3
 
 - **Shows are documents:** *Show laden*, *Show speichern*, *Show speichern unter* and *Zuletzt verwendet* in the File menu, an orange dot for unsaved changes, a prompt before they are replaced, and double-click in the Finder.
